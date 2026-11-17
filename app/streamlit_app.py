@@ -1,17 +1,97 @@
 
 import os
 from uuid import uuid4
-
+import time
 import requests
 import streamlit as st
 
 # ---------------- SETTINGS ----------------
 st.set_page_config(
-    page_title="ResearchIQ",
-    page_icon="🔬",
+    page_title="ResearchIQ | VECTOR",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
+
+# ---------- CINEMATIC STARTUP ANIMATION ----------
+
+if "intro_shown" not in st.session_state:
+    st.session_state.intro_shown = False
+
+if not st.session_state.intro_shown:
+
+    splash = st.empty()
+
+    splash.markdown("""
+    <style>
+    .vector-intro {
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        height: 100vh;
+        background: #000000;
+        z-index: 999999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        animation: introExit 2.8s ease-in-out forwards;
+    }
+
+    .vector-title {
+        font-family: Arial, sans-serif;
+        font-size: clamp(36px, 7vw, 74px);
+        font-weight: 300;
+        letter-spacing: 14px;
+        color: #ffffff;
+        opacity: 0;
+        animation: textReveal 2s ease forwards;
+    }
+
+    .vector-subtitle {
+        font-family: Arial, sans-serif;
+        font-size: 13px;
+        letter-spacing: 9px;
+        color: #999999;
+        margin-top: 18px;
+        opacity: 0;
+        animation: textReveal 1.5s ease 0.6s forwards;
+    }
+
+    @keyframes textReveal {
+        0% {
+            opacity: 0;
+            transform: translateY(15px);
+            filter: blur(8px);
+        }
+        100% {
+            opacity: 1;
+            transform: translateY(0);
+            filter: blur(0);
+        }
+    }
+
+    @keyframes introExit {
+        0%, 70% {
+            opacity: 1;
+        }
+        100% {
+            opacity: 0;
+            visibility: hidden;
+        }
+    }
+    </style>
+
+    <div class="vector-intro">
+        <div class="vector-title">VECTOR</div>
+        <div class="vector-subtitle">PRESENTS</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    time.sleep(2.8)
+
+    splash.empty()
+    st.session_state.intro_shown = True
 
 API_URL = os.getenv(
     "RESEARCHIQ_API_URL",
@@ -121,7 +201,7 @@ active_id = st.session_state.active_chat
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.markdown(
-        '<div class="brand">🔬 ResearchIQ</div>',
+        '<div class="brand">⚡ ResearchIQ</div>',
         unsafe_allow_html=True
     )
     st.caption("AI Research Companion")
@@ -160,7 +240,7 @@ with st.sidebar:
 # ---------------- MAIN INTERFACE ----------------
 chat = st.session_state.chats[active_id]
 
-st.markdown("### 🔬 ResearchIQ")
+st.markdown("### ⚡ ResearchIQ")
 st.caption("Multimodal AI Research Assistant")
 st.divider()
 
@@ -245,7 +325,8 @@ if submission:
 
         response_parts = []
         sources = []
-
+        uploaded_pdf_ids = []
+        image_ids = []
         with st.spinner("Working on your request..."):
 
             # Send PDF attachments to FastAPI
@@ -267,7 +348,8 @@ if submission:
                     )
 
                     upload_response.raise_for_status()
-
+                    upload_result = upload_response.json()
+                    uploaded_pdf_ids.append(upload_result["paper_id"])
                     response_parts.append(
                         f"✅ Uploaded **{file.name}** "
                         "(not indexed yet)."
@@ -306,7 +388,7 @@ if submission:
 
                         response.raise_for_status()
                         result = response.json()
-
+                        image_ids.append(result["image_id"])
                         response_parts.append(
                             f"✅ Image **{file.name}** uploaded successfully. "
                             f"ID: `{result['image_id']}`"
@@ -323,10 +405,14 @@ if submission:
                 try:
                     response = requests.post(
                         f"{API_URL}/ask",
-                        json={
-                            "question": question,
-                            "selected_papers": []
-                        },
+                        
+                    json={
+                        "question": question,
+                        "selected_papers": [],
+                        "uploaded_pdf_ids": uploaded_pdf_ids,
+                        "image_ids": image_ids
+                    },
+
                         timeout=60
                     )
 

@@ -9,9 +9,12 @@ import json
 app = FastAPI(title="ResearchIQ API")
 
 
+
 class QuestionRequest(BaseModel):
     question: str = Field(min_length=1)
     selected_papers: list[str] = Field(default_factory=list)
+    uploaded_pdf_ids: list[str] = Field(default_factory=list)
+    image_ids: list[str] = Field(default_factory=list)
 
 
 @app.get("/health")
@@ -19,12 +22,16 @@ def health():
     return {"status": "Backend is running!"}
 
 
+
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
-    # Temporary response until RAG is connected
     return {
         "answer": f"Received your question: {request.question}. RAG integration pending.",
-        "sources": []
+        "sources": [],
+        "received_attachments": {
+            "pdf_ids": request.uploaded_pdf_ids,
+            "image_ids": request.image_ids
+        }
     }
 
 # Directory for uploaded PDFs
@@ -183,7 +190,7 @@ async def upload_image(file: UploadFile = File(...)):
     image_id = uuid4().hex
     image_path = IMAGE_DIR / f"{image_id}{extension}"
     image_path.write_bytes(content)
-
+    
     return {
         "image_id": image_id,
         "filename": filename,
