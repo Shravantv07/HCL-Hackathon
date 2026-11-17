@@ -1,10 +1,18 @@
+"""
+ResearchIQ API. Run from the project root:  uvicorn backend.main:app --reload
+"""
+import csv
 
 from fastapi import FastAPI
 from pydantic import BaseModel, Field
 from fastapi import UploadFile, File, HTTPException
+from starlette.concurrency import run_in_threadpool
 from pathlib import Path
 from uuid import uuid4
-import json
+
+from src.config import PROJECT_ROOT
+from src.chains import qa_chain, sources as chain_sources
+from src.ingestion.uploads import UPLOAD_DIR, UploadError, ingest_upload, load_registry
 
 app = FastAPI(title="ResearchIQ API")
 
@@ -25,17 +33,27 @@ def health():
 
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
+    # Papers attached to this message (or selected in the UI) scope the search;
+    # with none, the whole library is searched.
+    paper_ids = list(dict.fromkeys(request.selected_papers + request.uploaded_pdf_ids)) or None
+    result = qa_chain.answer(request.question, paper_ids=paper_ids)
+
+    answer = result["answer"]
+    if result["status"] == "error":
+        answer = f"⚠️ {result['error']}"
+
     return {
-        "answer": f"Received your question: {request.question}. RAG integration pending.",
-        "sources": [],
+        "answer": answer,
+        "status": result["status"],
+        "sources": result["citations"],   # each has paper, page, paper_id, chunk_id, section, text
+        "warnings": result["warnings"],
         "received_attachments": {
             "pdf_ids": request.uploaded_pdf_ids,
             "image_ids": request.image_ids
         }
     }
 
-# Directory for uploaded PDFs
-UPLOAD_DIR = Path("data/uploads")
+# Directory for uploaded PDFs (shared with src/ingestion/uploads.py)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
@@ -71,71 +89,51 @@ async def upload_pdf(file: UploadFile = File(...)):
             detail="Invalid PDF file"
         )
 
-    # Save using a unique filename
-    paper_id = uuid4().hex
-    file_path = UPLOAD_DIR / f"{paper_id}.pdf"
+    # Save, index (text + figures) and register the paper. Indexing is blocking work
+    # (PDF parsing + embedding calls), so it runs in a worker thread.
+    try:
+        record = await run_in_threadpool(ingest_upload, content, filename)
+    except UploadError as e:
+        raise HTTPException(status_code=422, detail=str(e))
 
-    file_path.write_bytes(content)
-
-    # Store original paper information
-    metadata = {
-        "paper_id": paper_id,
-        "filename": filename,
-        "status": "uploaded_not_indexed"
-    }
-
-    metadata_path = UPLOAD_DIR / f"{paper_id}.json"
-
-    metadata_path.write_text(
-        json.dumps(metadata, indent=2),
-        encoding="utf-8"
-    )
+    # The shared retriever's BM25 index was built before this paper existed.
+    if not record.get("duplicate"):
+        chain_sources.refresh_retriever()
 
     return {
-        "paper_id": paper_id,
+        "paper_id": record["paper_id"],
         "filename": filename,
-        "status": "uploaded_not_indexed"
+        "title": record.get("title"),
+        "status": record["status"],            # "indexed"
+        "duplicate": record.get("duplicate", False),
+        "pages": record.get("pages"),
+        "text_chunks": record.get("text_chunks"),
+        "figures": record.get("figures"),
     }
 
 
 @app.get("/papers")
 def list_papers():
+    """Every registered paper: the team catalogue plus user uploads (with their status)."""
     papers = []
 
-    for pdf_path in UPLOAD_DIR.glob("*.pdf"):
-        papers.append({
-            "paper_id": pdf_path.stem,
-            "filename": pdf_path.name,
-            "status": "uploaded_not_indexed"
-        })
+    catalogue = PROJECT_ROOT / "paper_catalogue.csv"
+    if catalogue.exists():
+        with open(catalogue, newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                if row.get("id", "").strip():
+                    papers.append({
+                        "paper_id": row["id"].strip(),
+                        "title": row.get("title", "").strip(),
+                        "filename": row.get("local_filename", "").strip(),
+                        "status": "indexed",
+                        "source": "catalogue",
+                    })
 
-    return {
-        "papers": papers,
-        "total": len(papers)
-    }
-
-
-@app.get("/papers")
-def list_papers():
-    papers = []
-
-    for pdf_path in UPLOAD_DIR.glob("*.pdf"):
-        paper_id = pdf_path.stem
-        metadata_path = UPLOAD_DIR / f"{paper_id}.json"
-
-        if metadata_path.exists():
-            metadata = json.loads(
-                metadata_path.read_text(encoding="utf-8")
-            )
-        else:
-            # Handle PDFs uploaded before metadata was added
-            metadata = {
-                "paper_id": paper_id,
-                "filename": pdf_path.name,
-                "status": "uploaded_not_indexed"
-            }
-
-        papers.append(metadata)
+    for record in load_registry().values():
+        papers.append({k: record.get(k) for k in (
+            "paper_id", "title", "filename", "status", "error",
+            "pages", "text_chunks", "figures", "uploaded_at")} | {"source": "upload"})
 
     return {
         "papers": papers,
@@ -143,7 +141,7 @@ def list_papers():
     }
 
 # Directory for uploaded images
-IMAGE_DIR = Path("data/uploads/images")
+IMAGE_DIR = UPLOAD_DIR / "images"
 IMAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_IMAGE_SIZE = 10 * 1024 * 1024  # 10 MB

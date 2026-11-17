@@ -17,6 +17,7 @@ from typing import List, Dict, Any
 
 import chromadb
 from google import genai
+from google.genai import types
 
 from src.config import get_settings
 from src.ingestion.pdf_parser import parse_pdf
@@ -54,7 +55,9 @@ def _get_collection():
         def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
             response = self._client.models.embed_content(
                 model=EMBEDDING_MODEL,
-                contents=input,
+                # One Content per chunk: a plain list of strings is treated as ONE
+                # multi-part input by gemini-embedding-2 and returns a single embedding.
+                contents=[types.Content(parts=[types.Part(text=t)]) for t in input],
             )
             return [e.values for e in response.embeddings]
 

@@ -16,13 +16,17 @@ Normalized passage (field names follow Member 1's chunk dicts, src/ingestion/ind
         figure_ref: str,
         image_path: str,
         text: str,
-        score: float | None,    # retrieval score: `score`, or Member 2's `rrf_score`
+        score: float | None,    # best available ranking score (see _score below)
     }
 
 Member 2's interface (src/retrieval/retriever.py):
-    retrieve(query, top_k=6, paper_ids=None) -> [{"id", <chunk metadata>, "text", "rrf_score"}]
-Note: `paper_ids` currently filters only the dense (Chroma) half of the hybrid search;
-BM25 hits from other papers can still appear, so per-paper callers re-filter here.
+    Retriever().retrieve(query, top_k=None, paper_ids=None, rerank=None)
+        -> [{"id", "text", <chunk metadata>, "score", "rrf_score", "rerank_score"?}]
+    `score` means different things per source (cosine distance for dense hits, BM25 score
+    for keyword hits), so the reranker / fusion scores are preferred.
+One Retriever is created lazily and reused: building it loads every chunk and the BM25
+index, so it must not be rebuilt per query (restart the app after re-indexing).
+Paths come from src/config.py, so they resolve against the project root.
 """
 
 import csv
@@ -33,18 +37,40 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
+from src.config import PROJECT_ROOT, get_settings
 
-load_dotenv()
+_settings = get_settings()
+TOP_K = _settings.top_k
+CATALOGUE_PATH = os.getenv("PAPER_CATALOGUE") or str(PROJECT_ROOT / "paper_catalogue.csv")
+FIGURES_INDEX_PATH = str(_settings.figures_index_path)  # written by indexer.py
+FIGURES_PATH = str(_settings.figures_path)              # where the indexer saves images
 
-TOP_K = int(os.getenv("TOP_K", "6"))
-CATALOGUE_PATH = os.getenv("PAPER_CATALOGUE", "./paper_catalogue.csv")
-FIGURES_INDEX_PATH = os.getenv("FIGURES_INDEX_PATH", "./data/figures_index.json")  # written by indexer.py
-FIGURES_PATH = os.getenv("FIGURES_PATH", "./data/figures")  # same variable the indexer uses
+_retriever = None  # shared Retriever instance, created on first use
 
 
 class SourceError(RuntimeError):
     """Raised when passages or figures cannot be obtained from teammate components."""
+
+
+def _get_retriever():
+    """Create Member 2's Retriever once; a failed attempt is retried on the next call."""
+    global _retriever
+    if _retriever is None:
+        from src.retrieval.retriever import Retriever  # imported lazily: Member 2's module
+        _retriever = Retriever()
+    return _retriever
+
+
+def _explain_retrieval_error(e: Exception) -> str:
+    """Turn common setup failures into actionable messages."""
+    text = str(e)
+    if isinstance(e, ModuleNotFoundError) and "sentence_transformers" in text:
+        return ("Reranker dependency missing: run `pip install sentence-transformers`, "
+                "or set RERANK_ENABLED=false in .env.")
+    if "does not exist" in text.lower() or type(e).__name__ == "NotFoundError":
+        return (f"Search index not found at {_settings.chroma_path}. Build it with: "
+                "python -m src.ingestion.indexer --catalogue paper_catalogue.csv")
+    return f"Retrieval failed: {e}"
 
 
 @lru_cache(maxsize=1)
@@ -61,18 +87,46 @@ def _catalogue_titles() -> Dict[str, str]:
         }
 
 
+def _uploaded_titles() -> Dict[str, str]:
+    """paper_id -> title of indexed user uploads (read live: uploads change at runtime)."""
+    try:
+        from src.ingestion.uploads import indexed_uploads
+        return indexed_uploads()
+    except Exception:
+        return {}
+
+
 def paper_title(paper_id: str) -> str:
-    return _catalogue_titles().get(paper_id, "")
+    return _catalogue_titles().get(paper_id) or _uploaded_titles().get(paper_id, "")
 
 
 @lru_cache(maxsize=1)
-def known_paper_ids() -> Optional[frozenset]:
-    """All paper ids in paper_catalogue.csv, or None if the catalogue is unavailable."""
+def _catalogue_ids() -> Optional[frozenset]:
     path = Path(CATALOGUE_PATH)
     if not path.exists():
         return None
     with open(path, newline="", encoding="utf-8") as f:
         return frozenset(row["id"].strip() for row in csv.DictReader(f) if row.get("id", "").strip())
+
+
+def known_paper_ids() -> Optional[frozenset]:
+    """
+    All registered paper ids: paper_catalogue.csv plus indexed uploads.
+    None only if neither source is available (callers then skip id validation).
+    """
+    catalogue, uploads = _catalogue_ids(), frozenset(_uploaded_titles())
+    if catalogue is None and not uploads:
+        return None
+    return (catalogue or frozenset()) | uploads
+
+
+def refresh_retriever() -> None:
+    """
+    Drop the shared Retriever so the next query rebuilds it. Call after indexing new
+    papers: the Retriever builds its BM25 index from the chunks present at creation.
+    """
+    global _retriever
+    _retriever = None
 
 
 def normalize_passage(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -103,9 +157,9 @@ def normalize_passage(record: Dict[str, Any]) -> Dict[str, Any]:
     except (TypeError, ValueError):
         page = None
 
-    score = meta.get("score")
-    if score is None:
-        score = meta.get("rrf_score")  # Member 2's hybrid retriever
+    # Prefer comparable scores: reranker, then fusion; raw `score` is source-specific.
+    score = next((meta[k] for k in ("rerank_score", "rrf_score", "score")
+                  if isinstance(meta.get(k), (int, float))), None)
     return {
         "chunk_id": str(chunk_id) if chunk_id else "",
         "paper_id": paper_id,
@@ -126,18 +180,19 @@ def get_passages(
     """
     Retrieve raw passage records for a question through Member 2's retriever.
 
-    `paper_ids` restricts the search to those papers: it is passed to retrieve(), and
-    because retrieve() currently filters only its dense half, records from other papers
-    are also dropped here. Records are otherwise returned as-is; chains normalize them
+    `paper_ids` restricts the search to those papers: it is passed to the retriever, and
+    any record from another paper is also dropped here as a safety check (attribution
+    must never depend on a teammate's filter). Records are otherwise returned as-is; chains normalize them
     with normalize_passage() so malformed records can be reported as warnings.
     Raises SourceError if retrieval fails. Never substitutes other data.
     """
     try:
-        from src.retrieval.retriever import retrieve  # imported lazily: Member 2's module
-        records = retrieve(question, top_k=top_k or TOP_K,
-                           paper_ids=list(paper_ids) if paper_ids else None)
+        records = _get_retriever().retrieve(
+            query=question, top_k=top_k or TOP_K,
+            paper_ids=list(paper_ids) if paper_ids else None,
+        )
     except Exception as e:
-        raise SourceError(f"Retrieval failed: {e}") from e
+        raise SourceError(_explain_retrieval_error(e)) from e
 
     records = list(records or [])
     if paper_ids:
@@ -253,10 +308,8 @@ def get_paper_passages(
     """
     Retrieve passages belonging to one paper, one retrieval per query.
 
-    The search is restricted with retrieve(paper_ids=[paper_id]). Because that filter
-    currently applies only to the dense half of Member 2's hybrid search, results are
-    also re-checked here and other papers' chunks dropped (top_k is widened a little to
-    compensate). Results from the different queries are interleaved by rank so a context
+    The search is restricted with paper_ids=[paper_id] (and re-checked in get_passages);
+    top_k defaults to 2 x TOP_K per query. Results from the different queries are interleaved by rank so a context
     budget does not drop a whole query's evidence. Returns normalized passages;
     raises SourceError.
     """

@@ -344,15 +344,33 @@ if submission:
                                 "application/pdf"
                             )
                         },
-                        timeout=60
+                        timeout=600  # upload now includes indexing (parsing + embeddings)
                     )
 
                     upload_response.raise_for_status()
                     upload_result = upload_response.json()
                     uploaded_pdf_ids.append(upload_result["paper_id"])
+                    title = upload_result.get("title") or file.name
+                    if upload_result.get("duplicate"):
+                        response_parts.append(
+                            f"✅ **{title}** is already in the library."
+                        )
+                    else:
+                        response_parts.append(
+                            f"✅ Indexed **{title}** — "
+                            f"{upload_result.get('pages')} pages, "
+                            f"{upload_result.get('text_chunks')} text chunks, "
+                            f"{upload_result.get('figures')} figures."
+                        )
+
+                except requests.HTTPError as e:
+                    try:
+                        detail = e.response.json().get("detail", "")
+                    except ValueError:
+                        detail = ""
                     response_parts.append(
-                        f"✅ Uploaded **{file.name}** "
-                        "(not indexed yet)."
+                        f"❌ Could not add **{file.name}**"
+                        + (f": {detail}" if detail else ".")
                     )
 
                 except requests.RequestException:
@@ -413,7 +431,7 @@ if submission:
                         "image_ids": image_ids
                     },
 
-                        timeout=60
+                        timeout=180  # retrieval + reranking + Gemini
                     )
 
                     response.raise_for_status()
