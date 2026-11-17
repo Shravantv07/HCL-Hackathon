@@ -26,8 +26,36 @@ with st.sidebar:
     if uploaded_files:
         st.success(f"{len(uploaded_files)} papers selected")
 
+    for file in uploaded_files:
+        st.write("📄", file.name)
+
+    if st.button("Upload Papers to Backend"):
         for file in uploaded_files:
-            st.write("📄", file.name)
+            with st.spinner(f"Uploading {file.name}..."):
+                try:
+                    response = requests.post(
+                        "http://127.0.0.1:8000/upload",
+                        files={
+                            "file": (
+                                file.name,
+                                file.getvalue(),
+                                "application/pdf"
+                            )
+                        },
+                        timeout=60
+                    )
+
+                    response.raise_for_status()
+                    result = response.json()
+
+                    st.success(
+                        f"{file.name} uploaded successfully!"
+                    )
+
+                except requests.RequestException as e:
+                    st.error(
+                        f"Failed to upload {file.name}: {e}"
+                    )
     else:
         st.info("Upload PDFs to get started.")
 
