@@ -8,9 +8,8 @@ import numpy as np
 from typing import List, Dict, Any
 
 import chromadb
-from chromadb.utils import embedding_functions
 from rank_bm25 import BM25Okapi
-import google.generativeai as genai
+from google import genai
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -32,13 +31,12 @@ _bm25: BM25Okapi = None
 
 
 def _get_embedding(text: str) -> List[float]:
-    genai.configure(api_key=GEMINI_API_KEY)
-    result = genai.embed_content(
+    client = genai.Client(api_key=GEMINI_API_KEY)
+    response = client.models.embed_content(
         model=EMBEDDING_MODEL,
-        content=text,
-        task_type="retrieval_query",
+        contents=text,
     )
-    return result["embedding"]
+    return response.embeddings[0].values
 
 
 def _load_assets():
@@ -47,16 +45,16 @@ def _load_assets():
     if _collection is not None:
         return
 
-    genai.configure(api_key=GEMINI_API_KEY)
-
     class GeminiEmbeddingFunction(chromadb.EmbeddingFunction):
+        def __init__(self):
+            self._client = genai.Client(api_key=GEMINI_API_KEY)
+
         def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
-            result = genai.embed_content(
+            response = self._client.models.embed_content(
                 model=EMBEDDING_MODEL,
-                content=input,
-                task_type="retrieval_document",
+                contents=input,
             )
-            return result["embedding"] if isinstance(input, str) else result["embedding"]
+            return [e.values for e in response.embeddings]
 
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     _collection = client.get_or_create_collection(

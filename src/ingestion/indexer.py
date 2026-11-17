@@ -17,9 +17,8 @@ from pathlib import Path
 from typing import List, Dict, Any
 
 import chromadb
-from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
 from src.ingestion.pdf_parser import parse_pdf
 from src.ingestion.figure_extractor import extract_figures
@@ -47,16 +46,17 @@ FIGURES_INDEX_PATH = "./data/figures_index.json"
 
 def _get_collection():
     """Return (or create) the Chroma collection with Gemini embeddings."""
-    genai.configure(api_key=GEMINI_API_KEY)
 
     class GeminiEmbeddingFunction(chromadb.EmbeddingFunction):
+        def __init__(self):
+            self._client = genai.Client(api_key=GEMINI_API_KEY)
+
         def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
-            result = genai.embed_content(
+            response = self._client.models.embed_content(
                 model=EMBEDDING_MODEL,
-                content=input,
-                task_type="retrieval_document",
+                contents=input,
             )
-            return result["embedding"] if isinstance(input, str) else result["embedding"]
+            return [e.values for e in response.embeddings]
 
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = client.get_or_create_collection(
