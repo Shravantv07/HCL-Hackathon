@@ -278,16 +278,45 @@ if submission:
                         f"❌ Failed to upload **{file.name}**."
                     )
 
-            # Images are UI-only for now
-            if any(
-                a["type"] == "image"
-                for a in attachments
-            ):
-                response_parts.append(
-                    "🖼️ Images attached successfully "
-                    "for preview. AI image analysis "
-                    "is not connected yet."
-                )
+            
+            # Send image attachments to FastAPI
+            for file in files:
+                if file.name.lower().endswith(".pdf"):
+                    continue
+
+                with st.spinner(f"Uploading {file.name}..."):
+                    try:
+                        extension = file.name.lower().split(".")[-1]
+                        mime_type = (
+                            "image/png" if extension == "png"
+                            else "image/jpeg"
+                        )
+
+                        response = requests.post(
+                            f"{API_URL}/upload-image",
+                            files={
+                                "file": (
+                                    file.name,
+                                    file.getvalue(),
+                                    mime_type
+                                )
+                            },
+                            timeout=60
+                        )
+
+                        response.raise_for_status()
+                        result = response.json()
+
+                        response_parts.append(
+                            f"✅ Image **{file.name}** uploaded successfully. "
+                            f"ID: `{result['image_id']}`"
+                        )
+
+                    except requests.RequestException:
+                        response_parts.append(
+                            f"❌ Failed to upload image **{file.name}**."
+                        )
+
 
             # Send question to FastAPI
             if question:
