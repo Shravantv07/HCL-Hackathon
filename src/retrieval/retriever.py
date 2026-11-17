@@ -66,7 +66,8 @@ def _load_assets():
     )
 
     # Load all chunks for BM25, retaining their Chroma IDs
-    all_data = _collection.get(include=["documents", "metadatas", "ids"])
+    # Note: "ids" is always returned by ChromaDB and must not be in include=[]
+    all_data = _collection.get(include=["documents", "metadatas"])
     ids   = all_data.get("ids") or []
     docs  = all_data.get("documents") or []
     metas = all_data.get("metadatas") or []
@@ -149,6 +150,11 @@ def retrieve(
     if _bm25:
         query_tokens  = query.lower().split()
         bm25_scores   = _bm25.get_scores(query_tokens)
+        # Respect paper_ids filter: zero out scores for chunks outside the filter
+        if paper_ids:
+            for i, chunk in enumerate(_all_chunks):
+                if chunk.get("paper_id") not in paper_ids:
+                    bm25_scores[i] = 0.0
         sparse_indices = list(np.argsort(bm25_scores)[::-1][:fetch_k])
 
     # --- RRF merge ---
