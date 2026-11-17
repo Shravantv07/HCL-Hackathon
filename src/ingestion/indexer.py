@@ -19,6 +19,7 @@ from typing import List, Dict, Any
 import chromadb
 from chromadb.utils import embedding_functions
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 from src.ingestion.pdf_parser import parse_pdf
 from src.ingestion.figure_extractor import extract_figures
@@ -34,7 +35,8 @@ CHROMA_PATH = os.getenv("CHROMA_PATH", "./data/chroma_index")
 FIGURES_PATH = os.getenv("FIGURES_PATH", "./data/figures")
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "512"))
 CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "64"))
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "models/text-embedding-004")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 COLLECTION_NAME = "research_papers"
 FIGURES_INDEX_PATH = "./data/figures_index.json"
 
@@ -44,15 +46,22 @@ FIGURES_INDEX_PATH = "./data/figures_index.json"
 # ---------------------------------------------------------------------------
 
 def _get_collection():
-    """Return (or create) the Chroma collection with OpenAI embeddings."""
+    """Return (or create) the Chroma collection with Gemini embeddings."""
+    genai.configure(api_key=GEMINI_API_KEY)
+
+    class GeminiEmbeddingFunction(chromadb.EmbeddingFunction):
+        def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
+            result = genai.embed_content(
+                model=EMBEDDING_MODEL,
+                content=input,
+                task_type="retrieval_document",
+            )
+            return result["embedding"] if isinstance(input, str) else result["embedding"]
+
     client = chromadb.PersistentClient(path=CHROMA_PATH)
-    openai_ef = embedding_functions.OpenAIEmbeddingFunction(
-        api_key=os.getenv("OPENAI_API_KEY"),
-        model_name=EMBEDDING_MODEL,
-    )
     collection = client.get_or_create_collection(
         name=COLLECTION_NAME,
-        embedding_function=openai_ef,
+        embedding_function=GeminiEmbeddingFunction(),
         metadata={"hnsw:space": "cosine"},
     )
     return collection

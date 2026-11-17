@@ -26,7 +26,7 @@ def wrap_source_content(text: str) -> str:
     return f"<source>\n{text}\n</source>"
 
 
-SYSTEM_PROMPT = """You are ResearchIQ, a research assistant.
+SYSTEM_PROMPT = """You are ResearchIQ, a research assistant powered by Gemini.
 
 Rules:
 - Answer ONLY from the provided <source> context.
