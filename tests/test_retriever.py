@@ -1,0 +1,180 @@
+
+from src.retrieval.retriever import Retriever
+
+
+class FakeVectorStore:
+
+    def get_all_chunks(self):
+        return [
+            {
+                "id": "A",
+                "text": "Multimodal models process images.",
+                "paper_id": "p01"
+            },
+            {
+                "id": "B",
+                "text": "Vision encoders process image patches.",
+                "paper_id": "p02"
+            }
+        ]
+
+    def semantic_search(self, query, top_k, paper_ids=None):
+        return [
+            {
+                "id": "A",
+                "text": "Multimodal models process images.",
+                "paper_id": "p01"
+            },
+            {
+                "id": "B",
+                "text": "Vision encoders process image patches.",
+                "paper_id": "p02"
+            }
+        ]
+
+
+class FakeKeywordSearcher:
+
+    def __init__(self, chunks):
+        self.chunks = chunks
+
+    def search(self, query, top_k, paper_ids=None):
+        return [
+            {
+                "id": "B",
+                "text": "Vision encoders process image patches.",
+                "paper_id": "p02"
+            },
+            {
+                "id": "A",
+                "text": "Multimodal models process images.",
+                "paper_id": "p01"
+            }
+        ]
+
+
+class FakeReranker:
+
+    def rerank(self, query, chunks, top_k):
+        results = [chunk.copy() for chunk in chunks]
+
+        results.reverse()
+
+        for result in results:
+            result["rerank_score"] = 0.9
+
+        return results[:top_k]
+
+
+def test_retriever_without_reranking():
+
+    retriever = Retriever(
+        vector_store=FakeVectorStore(),
+        keyword_searcher=FakeKeywordSearcher([]),
+    )
+
+    results = retriever.retrieve(
+        "How do multimodal models process images?",
+        top_k=2,
+        rerank=False
+    )
+
+    assert len(results) == 2
+    assert all("rrf_score" in result for result in results)
+
+    print("Hybrid retrieval pipeline successful!")
+
+
+def test_retriever_with_reranking():
+
+    retriever = Retriever(
+        vector_store=FakeVectorStore(),
+        keyword_searcher=FakeKeywordSearcher([]),
+        reranker=FakeReranker()
+    )
+
+    results = retriever.retrieve(
+        "How do multimodal models process images?",
+        top_k=2,
+        rerank=True
+    )
+
+    assert len(results) == 2
+    assert "rerank_score" in results[0]
+
+    print("Retrieval with reranking successful!")
+
+
+def test_empty_query():
+
+    retriever = Retriever(
+        vector_store=FakeVectorStore(),
+        keyword_searcher=FakeKeywordSearcher([])
+    )
+
+    try:
+        retriever.retrieve("")
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_invalid_top_k():
+    retriever = Retriever(
+        vector_store=FakeVectorStore(),
+        keyword_searcher=FakeKeywordSearcher([])
+    )
+    try:
+        retriever.retrieve("multimodal", top_k=0)
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_paper_ids_passed_through():
+    seen = {}
+
+    class RecordingVectorStore(FakeVectorStore):
+        def semantic_search(self, query, top_k, paper_ids=None):
+            seen["dense_paper_ids"] = paper_ids
+            return super().semantic_search(query, top_k, paper_ids=paper_ids)
+
+    class RecordingKeywordSearcher(FakeKeywordSearcher):
+        def search(self, query, top_k, paper_ids=None):
+            seen["sparse_paper_ids"] = paper_ids
+            return super().search(query, top_k, paper_ids=paper_ids)
+
+    retriever = Retriever(
+        vector_store=RecordingVectorStore(),
+        keyword_searcher=RecordingKeywordSearcher([])
+    )
+    retriever.retrieve("multimodal", top_k=2, paper_ids=["p01"], rerank=False)
+    assert seen["dense_paper_ids"] == ["p01"]
+    assert seen["sparse_paper_ids"] == ["p01"]
+
+
+def test_empty_results_skips_reranker():
+    class EmptyVectorStore(FakeVectorStore):
+        def semantic_search(self, query, top_k, paper_ids=None):
+            return []
+
+    class EmptyKeywordSearcher(FakeKeywordSearcher):
+        def search(self, query, top_k, paper_ids=None):
+            return []
+
+    class FailingReranker:
+        def rerank(self, query, chunks, top_k):
+            raise AssertionError("Reranker should not be called when there are no results")
+
+    retriever = Retriever(
+        vector_store=EmptyVectorStore(),
+        keyword_searcher=EmptyKeywordSearcher([]),
+        reranker=FailingReranker(),
+    )
+    assert retriever.retrieve("no match", top_k=2, rerank=True) == []
+
+
+if __name__ == "__main__":
+    test_retriever_without_reranking()
+    test_retriever_with_reranking()
+    test_empty_query()

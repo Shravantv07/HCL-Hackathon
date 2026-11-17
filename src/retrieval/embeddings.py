@@ -1,26 +1,16 @@
-
-import os
 from typing import List
 
 from google import genai
-from dotenv import load_dotenv
 
-load_dotenv()
+from src.config import get_settings
 
 
 class EmbeddingGenerator:
 
     def __init__(self):
-
-        self.api_key = os.getenv("GEMINI_API_KEY")
-        self.model_name = os.getenv(
-            "EMBEDDING_MODEL",
-            "gemini-embedding-2"
-        )
-
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY not found.")
-
+        cfg = get_settings()
+        self.api_key = cfg.require_gemini_api_key()
+        self.model_name = cfg.embedding_model
         self.client = genai.Client(api_key=self.api_key)
 
     def embed_query(self, query: str) -> List[float]:

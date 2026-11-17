@@ -78,3 +78,11 @@ def test_detect_section():
 def test_count_tokens():
     assert _count_tokens("hello world foo") == 3
     assert _count_tokens("") == 0
+
+
+def test_chunk_pages_rejects_invalid_overlap():
+    pages = _make_pages("word " * 20, paper_id="p01")
+    with pytest.raises(ValueError, match="overlap"):
+        chunk_pages(pages, chunk_size=10, overlap=10)
+    with pytest.raises(ValueError, match="chunk_size"):
+        chunk_pages(pages, chunk_size=0, overlap=0)

@@ -9,36 +9,34 @@ Run for all papers listed in paper_catalogue.csv:
     python -m src.ingestion.indexer --catalogue paper_catalogue.csv
 """
 
-import os
-import json
 import argparse
 import csv
+import json
 from pathlib import Path
 from typing import List, Dict, Any
 
 import chromadb
-from chromadb.utils import embedding_functions
-from dotenv import load_dotenv
-import google.generativeai as genai
+from google import genai
 
+from src.config import get_settings
 from src.ingestion.pdf_parser import parse_pdf
 from src.ingestion.figure_extractor import extract_figures
 from src.ingestion.chunker import chunk_pages, chunk_figures
 
-load_dotenv()
-
 # ---------------------------------------------------------------------------
-# Config (from .env or defaults)
+# Config (loaded centrally from .env / environment)
 # ---------------------------------------------------------------------------
 
-CHROMA_PATH     = os.getenv("CHROMA_PATH", "./data/chroma_index")
-FIGURES_PATH    = os.getenv("FIGURES_PATH", "./data/figures")
-CHUNK_SIZE      = int(os.getenv("CHUNK_SIZE", "512"))
-CHUNK_OVERLAP   = int(os.getenv("CHUNK_OVERLAP", "64"))
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
-GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
-COLLECTION_NAME = "research_papers"
-FIGURES_INDEX_PATH = "./data/figures_index.json"
+_settings          = get_settings()
+CHROMA_PATH        = str(_settings.chroma_path)
+FIGURES_PATH       = str(_settings.figures_path)
+PAPERS_PATH        = str(_settings.papers_path)
+CHUNK_SIZE         = _settings.chunk_size
+CHUNK_OVERLAP      = _settings.chunk_overlap
+EMBEDDING_MODEL    = _settings.embedding_model
+GEMINI_API_KEY     = _settings.gemini_api_key
+COLLECTION_NAME    = _settings.chroma_collection
+FIGURES_INDEX_PATH = str(_settings.figures_index_path)
 
 
 # ---------------------------------------------------------------------------
@@ -47,16 +45,18 @@ FIGURES_INDEX_PATH = "./data/figures_index.json"
 
 def _get_collection():
     """Return (or create) the Chroma collection with Gemini embeddings."""
-    genai.configure(api_key=GEMINI_API_KEY)
 
     class GeminiEmbeddingFunction(chromadb.EmbeddingFunction):
+        def __init__(self):
+            api_key = get_settings().require_gemini_api_key()
+            self._client = genai.Client(api_key=api_key)
+
         def __call__(self, input: chromadb.Documents) -> chromadb.Embeddings:
-            result = genai.embed_content(
+            response = self._client.models.embed_content(
                 model=EMBEDDING_MODEL,
-                content=input,
-                task_type="retrieval_document",
+                contents=input,
             )
-            return result["embedding"] if isinstance(input, str) else result["embedding"]
+            return [e.values for e in response.embeddings]
 
     client = chromadb.PersistentClient(path=CHROMA_PATH)
     collection = client.get_or_create_collection(
@@ -188,7 +188,7 @@ def index_paper(pdf_path: str, paper_id: str, paper_title: str) -> Dict[str, Any
 # Batch ingestion from catalogue
 # ---------------------------------------------------------------------------
 
-def index_from_catalogue(catalogue_path: str, papers_dir: str = "./data/papers") -> None:
+def index_from_catalogue(catalogue_path: str, papers_dir: str = PAPERS_PATH) -> None:
     """Read paper_catalogue.csv and index every paper whose PDF file exists."""
     with open(catalogue_path, newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -225,7 +225,7 @@ if __name__ == "__main__":
     group.add_argument("--catalogue", help="Path to paper_catalogue.csv for batch ingestion")
     parser.add_argument("--id",         help="Paper ID (required with --pdf)")
     parser.add_argument("--title",      help="Paper title (optional with --pdf)", default="")
-    parser.add_argument("--papers-dir", default="./data/papers")
+    parser.add_argument("--papers-dir", default=PAPERS_PATH)
 
     args = parser.parse_args()
 
