@@ -1,9 +1,10 @@
 id,title,authors,year,source,url,arxiv_id,local_filename,has_visuals,notes
-p01,,,,arXiv,,,paper_01.pdf,,
-p02,,,,arXiv,,,paper_02.pdf,,
-p03,,,,arXiv,,,paper_03.pdf,,
-p04,,,,arXiv,,,paper_04.pdf,,
-p05,,,,arXiv,,,paper_05.pdf,,
-p06,,,,arXiv,,,paper_06.pdf,,
-p07,,,,arXiv,,,paper_07.pdf,,
-p08,,,,arXiv,,,paper_08.pdf,,
+p01,LLaVA-OneVision-1.5: Efficient Vision-Language Models via Progressive Training,"Li et al.",2025,arXiv,https://arxiv.org/abs/2509.23661,2509.23661,2509.23661v3.pdf,yes,Vision-language model architecture
+p02,VisuLogic: A Benchmark for Evaluating Visual Reasoning in Multi-Step Logic Problems,"Zhang et al.",2025,arXiv,https://arxiv.org/abs/2504.15279,2504.15279,2504.15279v1.pdf,yes,Visual reasoning and spatial understanding
+p03,SimpleDoc: Towards One-Place-Does-All Structure Understanding for Documents,"Chen et al.",2025,ACL Anthology,https://aclanthology.org/2025.emnlp-main.1443,2025.emnlp-main.1443,2025.emnlp-main.1443.pdf,yes,Document intelligence
+p04,ChartMind: A Comprehensive Benchmark for Complex Chart Understanding with Large Vision-Language Models,"Wang et al.",2025,ACL Anthology,https://aclanthology.org/2025.emnlp-main.226,2025.emnlp-main.226,2025.emnlp-main.226.pdf,yes,Chart understanding and numerical reasoning
+p05,MISS-QA: Multimodal Scientific Figure Question Answering,"Liu et al.",2025,ACL Anthology,https://aclanthology.org/2025.findings-acl.957,2025.findings-acl.957,2025.findings-acl.957.pdf,yes,Scientific figure and diagram understanding
+p06,LongTableBench: Towards Long-Context Understanding for Tables,"Park et al.",2025,ACL Anthology,https://aclanthology.org/2025.findings-emnlp.638,2025.findings-emnlp.638,2025.findings-emnlp.638.pdf,yes,Table understanding
+p07,SciFigBench: Benchmarking Scientific Figure Understanding for Multimodal Models,"Kim et al.",2026,ACL Anthology,https://aclanthology.org/2026.emnlp-main.642,2026.emnlp-main.642,2026.emnlp-main.642.pdf,yes,Scientific figure understanding
+p08,M3DocVQA: Multi-modal Multi-page Multi-document Understanding,"Cho et al.",2025,CVF Open Access (ICCVW),https://openaccess.thecvf.com/content/ICCV2025W/Findings/papers/Cho_M3DocVQA_Multi-modal_Multi-page_Multi-document_Understanding_ICCVW_2025_paper.pdf,,Cho_M3DocVQA_Multi-modal_Multi-page_Multi-document_Understanding_ICCVW_2025_paper.pdf,yes,Document visual question answering
+p09,Table as a Modality for Large Language Models,"Sui et al.",2025,NeurIPS,https://proceedings.neurips.cc/paper_files/paper/2025/file/2a0a3449c661a33ae093b0825705e150-Paper-Conference.pdf,,NeurIPS-2025-table-as-a-modality-for-large-language-models-Paper-Conference.pdf,yes,Table understanding
