@@ -11,10 +11,12 @@ venv/
 dist/
 build/
 
-# Data (do not commit PDFs or generated indexes)
-data/papers/
-data/figures/
+# Data (do not commit generated vector indexes — too large and machine-specific)
 data/chroma_index/
+
+# Figures and PDFs are allowed (hackathon use, non-sensitive)
+# data/papers/   <- intentionally not ignored
+# data/figures/  <- intentionally not ignored
 
 # Evaluation outputs (commit the questions CSV, not raw LLM outputs)
 evaluation/results/

@@ -2,17 +2,87 @@
 PDF text extraction with page-level metadata.
 Uses PyMuPDF as primary parser; falls back to OCR for image-only pages.
 """
-import fitz  # PyMuPDF
+
+import pymupdf as fitz
+import pytesseract
+from PIL import Image
 from pathlib import Path
 from typing import List, Dict, Any
+import io
+
+
+def _page_to_image(page: fitz.Page, dpi: int = 200) -> Image.Image:
+    """Render a PDF page to a PIL image for OCR."""
+    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
+    return Image.open(io.BytesIO(pix.tobytes("png")))
+
+
+def _is_mostly_empty(text: str, min_chars: int = 50) -> bool:
+    """Return True if the extracted text is too short to be useful."""
+    return len(text.strip()) < min_chars
 
 
 def parse_pdf(pdf_path: str, paper_id: str) -> List[Dict[str, Any]]:
     """
-    Extract text blocks from a PDF, one entry per page.
+    Extract text from every page of a PDF.
 
-    Returns a list of dicts:
-        { paper_id, page, text, is_ocr }
+    Strategy:
+      1. Use PyMuPDF to extract text blocks (handles multi-column via sort=True).
+      2. If a page yields fewer than 50 characters, fall back to Tesseract OCR.
+
+    Returns a list of page dicts:
+        {
+            paper_id: str,
+            page: int,          # 1-indexed
+            text: str,
+            is_ocr: bool,
+            word_count: int
+        }
     """
-    # TODO: implement
-    raise NotImplementedError
+    path = Path(pdf_path)
+    if not path.exists():
+        raise FileNotFoundError(f"PDF not found: {pdf_path}")
+
+    pages: List[Dict[str, Any]] = []
+
+    with fitz.open(str(path)) as doc:
+        for page_num, page in enumerate(doc, start=1):
+            # Primary: PyMuPDF text extraction
+            # sort=True reads left-to-right, top-to-bottom — better for multi-column
+            raw_text = page.get_text("text", sort=True)
+
+            is_ocr = False
+            if _is_mostly_empty(raw_text):
+                # Fallback: render page to image and run OCR
+                try:
+                    img = _page_to_image(page)
+                    raw_text = pytesseract.image_to_string(img)
+                    is_ocr = True
+                except Exception:
+                    raw_text = ""  # OCR unavailable; keep empty
+
+            cleaned = raw_text.strip()
+            pages.append(
+                {
+                    "paper_id": paper_id,
+                    "page": page_num,
+                    "text": cleaned,
+                    "is_ocr": is_ocr,
+                    "word_count": len(cleaned.split()),
+                }
+            )
+
+    return pages
+
+
+if __name__ == "__main__":
+    import sys, json
+
+    if len(sys.argv) < 3:
+        print("Usage: python pdf_parser.py <pdf_path> <paper_id>")
+        sys.exit(1)
+
+    result = parse_pdf(sys.argv[1], sys.argv[2])
+    for p in result:
+        print(f"Page {p['page']:3d} | words: {p['word_count']:5d} | ocr: {p['is_ocr']}")
