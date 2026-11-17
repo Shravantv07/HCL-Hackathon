@@ -38,6 +38,7 @@ Verification result:
 
 import json
 import re
+from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
 from src.chains import evidence
@@ -128,6 +129,30 @@ def split_claims(text: str, location: Optional[Dict[str, Any]] = None,
 # ---------------------------------------------------------------------------
 # deterministic checks
 # ---------------------------------------------------------------------------
+
+_TOKEN_RE = re.compile(r"[a-z0-9][a-z0-9.,%\-]*")
+
+
+def _quote_in(quote: str, passage: str) -> bool:
+    """
+    True if `quote` occurs in `passage`. Exact (normalised) match first; otherwise a
+    tolerant match for text extracted from multi-column PDFs, where a sentence is
+    often interleaved with the neighbouring column: >= 90% of the quote's words must
+    occur in the passage AND an unbroken run of >= 40% of them (at least 3) must
+    appear in order. Paraphrased or invented quotes still fail.
+    """
+    q, p = _norm(quote), _norm(passage)
+    if q and q in p:
+        return True
+    qt = [t.rstrip(".,") for t in _TOKEN_RE.findall(q)]
+    pt = [t.rstrip(".,") for t in _TOKEN_RE.findall(p)]
+    if len(qt) < 4 or not pt:
+        return False
+    vocab = set(pt)
+    coverage = sum(t in vocab for t in qt) / len(qt)
+    run = SequenceMatcher(None, qt, pt, autojunk=False).find_longest_match(0, len(qt), 0, len(pt)).size
+    return coverage >= 0.9 and run >= max(3, 0.4 * len(qt))
+
 
 def _norm(text: str) -> str:
     text = re.sub(r"-\s*\n\s*", "", text or "")          # PDF line-break hyphenation
@@ -296,7 +321,7 @@ def _apply_judgement(record: Dict[str, Any], judgement: Optional[Dict[str, Any]]
         if not isinstance(q, dict) or not str(q.get("quote") or "").strip():
             continue
         label, quote = str(q.get("label") or ""), str(q["quote"]).strip()
-        found = label in labels and _norm(quote) in _norm(sources[label].get("text", ""))
+        found = label in labels and _quote_in(quote, sources[label].get("text", ""))
         record["evidence"].append({"source_label": label, "quote": quote, "quote_found": found})
     quote_ok = any(e["quote_found"] for e in record["evidence"])
 

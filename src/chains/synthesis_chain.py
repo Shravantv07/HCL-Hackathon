@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 from src.chains import evidence
 from src.chains.comparison_chain import (
     DIMENSIONS, GAP_LABEL, NOT_REPORTED, _cell, _load_json_object, _statements, _validate_ids,
+    strip_gap_label,
 )
 from src.chains.llm import LLMError, get_client
 from src.chains.sources import SourceError, get_paper_passages, known_paper_ids, paper_title
@@ -182,7 +183,7 @@ def synthesize_from_passages(
                  or [{"text": data["synthesis"].strip(), "citations": [], "status": "uncited"}])[0]
     if synthesis["status"] == "uncited":
         warnings.append("The synthesis does not cite any passage; treat it as unverified.")
-    gaps = [{**g, "label": GAP_LABEL}
+    gaps = [{**g, "text": strip_gap_label(g["text"]), "label": GAP_LABEL}
             for g in _statements(data.get("research_gaps"), reduce_labels, with_evidence, "research_gaps", warnings)]
 
     all_citations: Dict[str, Dict[str, Any]] = {}

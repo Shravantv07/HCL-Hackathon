@@ -11,11 +11,19 @@ from pathlib import Path
 from uuid import uuid4
 
 from src.config import PROJECT_ROOT
-from src.chains import qa_chain, sources as chain_sources
-from src.ingestion.uploads import UPLOAD_DIR, UploadError, ingest_upload, load_registry
+from src.chains import sources as chain_sources
+from src.ingestion.uploads import (
+    UPLOAD_DIR, UploadError, delete_upload, ingest_text_upload, ingest_upload, load_registry,
+)
+from backend.dispatch import route_question
 
 app = FastAPI(title="ResearchIQ API")
 
+
+
+class HistoryTurn(BaseModel):
+    role: str
+    content: str = ""
 
 
 class QuestionRequest(BaseModel):
@@ -23,6 +31,8 @@ class QuestionRequest(BaseModel):
     selected_papers: list[str] = Field(default_factory=list)
     uploaded_pdf_ids: list[str] = Field(default_factory=list)
     image_ids: list[str] = Field(default_factory=list)
+    history: list[HistoryTurn] = Field(default_factory=list)   # recent turns, for follow-ups
+    verify: bool = False                                        # claim-level evidence check
 
 
 @app.get("/health")
@@ -33,25 +43,28 @@ def health():
 
 @app.post("/ask")
 def ask_question(request: QuestionRequest):
-    # Papers attached to this message (or selected in the UI) scope the search;
-    # with none, the whole library is searched.
-    paper_ids = list(dict.fromkeys(request.selected_papers + request.uploaded_pdf_ids)) or None
-    result = qa_chain.answer(request.question, paper_ids=paper_ids)
+    """
+    Route the question to QA, comparison, synthesis or figure analysis
+    (see backend/dispatch.py). Papers attached to this message or selected in the
+    UI scope the search; with none, the whole library is searched.
+    """
+    images = [p for image_id in request.image_ids
+              for p in IMAGE_DIR.glob(f"{Path(image_id).name}.*")]
+    if request.image_ids and not images:
+        raise HTTPException(status_code=404, detail="Uploaded image not found.")
 
-    answer = result["answer"]
-    if result["status"] == "error":
-        answer = f"⚠️ {result['error']}"
-
-    return {
-        "answer": answer,
-        "status": result["status"],
-        "sources": result["citations"],   # each has paper, page, paper_id, chunk_id, section, text
-        "warnings": result["warnings"],
-        "received_attachments": {
-            "pdf_ids": request.uploaded_pdf_ids,
-            "image_ids": request.image_ids
-        }
+    result = route_question(
+        request.question,
+        paper_ids=request.selected_papers + request.uploaded_pdf_ids,
+        image_paths=images,
+        history=[t.model_dump() for t in request.history],
+        verify=request.verify,
+    )
+    result["received_attachments"] = {
+        "pdf_ids": request.uploaded_pdf_ids,
+        "image_ids": request.image_ids,
     }
+    return result
 
 # Directory for uploaded PDFs (shared with src/ingestion/uploads.py)
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
@@ -59,15 +72,19 @@ UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_FILE_SIZE = 20 * 1024 * 1024  # 20 MB
 
 
+TEXT_EXTENSIONS = (".txt", ".md")
+
+
 @app.post("/upload")
 async def upload_pdf(file: UploadFile = File(...)):
     filename = (file.filename or "").replace("\\", "/").split("/")[-1]
+    is_text = filename.lower().endswith(TEXT_EXTENSIONS)
 
     # Check file extension
-    if not filename.lower().endswith(".pdf"):
+    if not (filename.lower().endswith(".pdf") or is_text):
         raise HTTPException(
             status_code=400,
-            detail="Only PDF files are allowed"
+            detail="Only PDF, .txt and .md files are allowed"
         )
 
     # Read file with size limit
@@ -83,16 +100,18 @@ async def upload_pdf(file: UploadFile = File(...)):
         )
 
     # Basic PDF signature validation
-    if not content.startswith(b"%PDF-"):
+    if not is_text and not content.startswith(b"%PDF-"):
         raise HTTPException(
             status_code=400,
             detail="Invalid PDF file"
         )
 
     # Save, index (text + figures) and register the paper. Indexing is blocking work
-    # (PDF parsing + embedding calls), so it runs in a worker thread.
+    # (PDF parsing + embedding calls), so it runs in a worker thread. Text files are
+    # converted to PDF first so they follow exactly the same pipeline.
     try:
-        record = await run_in_threadpool(ingest_upload, content, filename)
+        ingest = ingest_text_upload if is_text else ingest_upload
+        record = await run_in_threadpool(ingest, content, filename)
     except UploadError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -139,6 +158,17 @@ def list_papers():
         "papers": papers,
         "total": len(papers)
     }
+
+
+@app.delete("/papers/{paper_id}")
+def delete_paper(paper_id: str):
+    """Remove a user upload from the index, the registry and disk (team papers cannot be deleted)."""
+    try:
+        removed = delete_upload(paper_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Upload not found (catalogue papers cannot be deleted).")
+    chain_sources.refresh_retriever()
+    return {"paper_id": paper_id, "deleted": True, "chunks_removed": removed}
 
 # Directory for uploaded images
 IMAGE_DIR = UPLOAD_DIR / "images"

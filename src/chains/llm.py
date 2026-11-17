@@ -11,6 +11,7 @@ compatible `generate` method instead of a real client.
 """
 
 import os
+import time
 from typing import Any, List, Optional
 
 import httpx
@@ -25,6 +26,7 @@ load_dotenv()
 
 DEFAULT_MODEL = "gemini-3.8-flash"  # override with LLM_MODEL in .env
 DEFAULT_TIMEOUT_S = 60.0
+_TRANSIENT_CODES = {408, 429, 500, 502, 503, 504}  # retried once before giving up
 
 
 class LLMError(RuntimeError):
@@ -90,16 +92,27 @@ class GeminiClient:
         )
         contents: List[Any] = [*(_to_part(img) for img in (images or [])), prompt]
 
-        try:
-            response = self._client.models.generate_content(
-                model=self.model, contents=contents, config=config
-            )
-        except httpx.TimeoutException as e:
-            raise LLMError(f"The model request timed out after {self.timeout_s:.0f}s.") from e
-        except genai_errors.APIError as e:
-            raise LLMError(self._describe_api_error(e)) from e
-        except httpx.HTTPError as e:
-            raise LLMError(f"Could not reach Gemini: {e}") from e
+        for attempt in range(2):  # one retry for dropped connections
+            try:
+                response = self._client.models.generate_content(
+                    model=self.model, contents=contents, config=config
+                )
+                break
+            except httpx.TimeoutException as e:
+                raise LLMError(f"The model request timed out after {self.timeout_s:.0f}s.") from e
+            except genai_errors.APIError as e:
+                # Server-side deadline / overload / rate limit: worth one retry after a pause.
+                if e.code in _TRANSIENT_CODES and attempt == 0:
+                    time.sleep(2)
+                    continue
+                raise LLMError(self._describe_api_error(e)) from e
+            except Exception as e:
+                # Transport errors may come from httpx or the SDK's own http stack
+                # (e.g. httpx2/httpcore2 RemoteProtocolError), so match by module.
+                if not type(e).__module__.split(".")[0].startswith(("httpx", "httpcore")):
+                    raise
+                if attempt == 1:
+                    raise LLMError(f"Could not reach Gemini: {e}") from e
 
         text = response.text
         if not text or not text.strip():

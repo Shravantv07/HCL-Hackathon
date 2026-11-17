@@ -99,6 +99,54 @@ def remove_from_index(paper_id: str) -> int:
     return removed
 
 
+def delete_upload(paper_id: str) -> int:
+    """
+    Remove a user upload completely: index data, registry entry and saved file.
+    Raises KeyError if `paper_id` is not a registered upload. Returns chunks removed.
+    """
+    with _lock:
+        registry = load_registry()
+        if paper_id not in registry:
+            raise KeyError(paper_id)
+        removed = remove_from_index(paper_id)
+        registry.pop(paper_id)
+        UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = REGISTRY_PATH.with_suffix(".tmp")
+        tmp.write_text(json.dumps(registry, indent=2, ensure_ascii=False), encoding="utf-8")
+        os.replace(tmp, REGISTRY_PATH)
+        (UPLOAD_DIR / f"{paper_id}.pdf").unlink(missing_ok=True)
+        return removed
+
+
+def text_to_pdf(text: str, title: str) -> bytes:
+    """Render plain text / Markdown source as a simple multi-page PDF (keeps line breaks)."""
+    import html
+    import io
+
+    body = "".join(f"<p>{html.escape(line) or '&nbsp;'}</p>" for line in text.splitlines())
+    story = fitz.Story(html=f"<h2>{html.escape(title)}</h2>{body}",
+                       user_css="p { font-size: 10pt; margin: 0 0 2pt 0; } h2 { font-size: 14pt; }")
+    buf = io.BytesIO()
+    writer = fitz.DocumentWriter(buf)
+    page_rect = fitz.paper_rect("a4")
+    more = True
+    while more:
+        device = writer.begin_page(page_rect)
+        more, _ = story.place(page_rect + (54, 54, -54, -54))
+        story.draw(device)
+        writer.end_page()
+    writer.close()
+    return buf.getvalue()
+
+
+def ingest_text_upload(content: bytes, filename: str) -> Dict[str, Any]:
+    """Ingest a .txt / .md upload by converting it to PDF and using the normal PDF pipeline."""
+    text = content.decode("utf-8", errors="replace").strip()
+    if not text:
+        raise UploadError("The text file is empty.")
+    return ingest_upload(text_to_pdf(text, Path(filename).stem), filename)
+
+
 def indexed_uploads() -> Dict[str, str]:
     """paper_id -> title for every successfully indexed upload."""
     return {pid: r.get("title") or pid for pid, r in load_registry().items()

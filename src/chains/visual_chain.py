@@ -25,6 +25,7 @@ The answer is always produced from the image; caption and nearby text are contex
 
 import io
 import json
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -227,6 +228,19 @@ def answer_about_figure(question: str, figure: Dict[str, Any], llm: Optional[Any
     )
 
 
+_NAMED_FIG_RE = re.compile(r"\b(fig(?:ure)?|table)\.?\s*(\d+)\b", re.IGNORECASE)
+
+
+def _named_figure(question: str, candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """If the question names "Figure N" / "Table N", the candidate whose caption starts with it."""
+    match = _NAMED_FIG_RE.search(question or "")
+    if not match:
+        return None
+    kind = "table" if match.group(1).lower() == "table" else r"fig(?:ure)?"
+    pattern = re.compile(rf"^\s*{kind}\.?\s*{match.group(2)}\b", re.IGNORECASE)
+    return next((c for c in candidates if pattern.match(c.get("caption") or "")), None)
+
+
 def answer_visual(question: str, fig_id: str = None, llm: Optional[Any] = None,
                   paper_ids: Optional[List[str]] = None) -> Dict[str, Any]:
     """
@@ -245,7 +259,7 @@ def answer_visual(question: str, fig_id: str = None, llm: Optional[Any] = None,
             if not candidates:
                 return _result("insufficient_evidence",
                                answer="No figure relevant to this question was found in the selected papers.")
-            figure = candidates[0]
+            figure = _named_figure(question, candidates) or candidates[0]
             if len(candidates) > 1:
                 others = [c["fig_id"] for c in candidates[1:] if c["fig_id"]]
                 warnings.append(f"Answered about the top-ranked figure; other candidates: {', '.join(others)}.")

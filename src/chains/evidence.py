@@ -28,10 +28,13 @@ def prepare_passages(records: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]
         except (ValueError, AttributeError, TypeError) as e:
             warnings.append(f"Skipped retrieved record #{i + 1}: {e}.")
             continue
-        key = p["chunk_id"] or (p["paper_id"], p["page"], p["text"])
-        if key in seen:
+        # The index can hold the same text under several chunk ids (e.g. a figure
+        # caption stored once per extracted image), so dedupe on content as well.
+        keys = {("id", p["chunk_id"]) if p["chunk_id"] else None,
+                ("text", p["paper_id"], " ".join(p["text"].split()))} - {None}
+        if keys & seen:
             continue
-        seen.add(key)
+        seen |= keys
         passages.append(p)
     return passages, warnings
 

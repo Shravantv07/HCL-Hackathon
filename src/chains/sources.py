@@ -33,6 +33,7 @@ import csv
 import json
 import os
 import re
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -59,6 +60,15 @@ def _get_retriever():
         from src.retrieval.retriever import Retriever  # imported lazily: Member 2's module
         _retriever = Retriever()
     return _retriever
+
+
+def _is_transient(e: Exception) -> bool:
+    """Network hiccups (SSL EOF, connection reset, timeouts, 5xx/429 from the embedding API)."""
+    text = f"{type(e).__name__} {e}".lower()
+    code = getattr(e, "code", None)
+    return (code in {408, 429, 500, 502, 503, 504}
+            or any(s in text for s in ("ssl", "eof", "connection", "timeout", "timed out", "deadline",
+                                       "temporarily", "remoteprotocol")))
 
 
 def _explain_retrieval_error(e: Exception) -> str:
@@ -120,6 +130,27 @@ def known_paper_ids() -> Optional[frozenset]:
     return (catalogue or frozenset()) | uploads
 
 
+def find_mentioned_papers(text: str) -> List[str]:
+    """
+    Registered papers (catalogue + uploads) named in `text`, in order of first mention.
+    Matches the paper id, full title, short title (before ':') and the short title
+    without a trailing version number (e.g. "LLaVA-OneVision" for "LLaVA-OneVision-1.5").
+    """
+    titles = {**_uploaded_titles(), **_catalogue_titles()}
+    lowered = (text or "").lower()
+    found = []
+    for pid, title in titles.items():
+        short = title.split(":")[0].strip()
+        aliases = {pid, title, short, re.sub(r"[-\s]v?\d+(\.\d+)*$", "", short)}
+        positions = [m.start() for a in aliases if len(a.strip()) >= 4
+                     for m in [re.search(rf"(?<![\w-]){re.escape(a.strip().lower())}(?![\w-])", lowered)] if m]
+        if re.search(rf"\b{re.escape(pid)}\b", lowered):
+            positions.append(lowered.index(pid))
+        if positions:
+            found.append((min(positions), pid))
+    return [pid for _, pid in sorted(found)]
+
+
 def refresh_retriever() -> None:
     """
     Drop the shared Retriever so the next query rebuilds it. Call after indexing new
@@ -175,7 +206,8 @@ def normalize_passage(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_passages(
-    question: str, top_k: Optional[int] = None, paper_ids: Optional[List[str]] = None
+    question: str, top_k: Optional[int] = None, paper_ids: Optional[List[str]] = None,
+    rerank: Optional[bool] = None,
 ) -> List[Dict[str, Any]]:
     """
     Retrieve raw passage records for a question through Member 2's retriever.
@@ -186,13 +218,21 @@ def get_passages(
     with normalize_passage() so malformed records can be reported as warnings.
     Raises SourceError if retrieval fails. Never substitutes other data.
     """
-    try:
-        records = _get_retriever().retrieve(
-            query=question, top_k=top_k or TOP_K,
-            paper_ids=list(paper_ids) if paper_ids else None,
-        )
-    except Exception as e:
-        raise SourceError(_explain_retrieval_error(e)) from e
+    for attempt in range(2):
+        try:
+            records = _get_retriever().retrieve(
+                query=question, top_k=top_k or TOP_K,
+                paper_ids=list(paper_ids) if paper_ids else None,
+                rerank=rerank,  # None = RERANK_ENABLED from config
+            )
+            break
+        except Exception as e:
+            # The query embedding is a network call; a dropped connection (SSL EOF,
+            # reset, timeout) is worth one retry. Setup errors are not.
+            if attempt == 0 and _is_transient(e):
+                time.sleep(1.5)
+                continue
+            raise SourceError(_explain_retrieval_error(e)) from e
 
     records = list(records or [])
     if paper_ids:
@@ -303,7 +343,7 @@ def find_figures(
 
 
 def get_paper_passages(
-    paper_id: str, queries: List[str], top_k: Optional[int] = None
+    paper_id: str, queries: List[str], top_k: Optional[int] = None, rerank: bool = False
 ) -> List[Dict[str, Any]]:
     """
     Retrieve passages belonging to one paper, one retrieval per query.
@@ -316,7 +356,9 @@ def get_paper_passages(
     per_query: List[List[Dict[str, Any]]] = []
     for query in queries:
         matches = []
-        for record in get_passages(query, top_k=top_k or TOP_K * 2, paper_ids=[paper_id]):
+        # No cross-encoder here: comparison/synthesis run 4-7 queries per paper, and reranking
+        # them on CPU dominated their runtime; the search is already scoped to one paper.
+        for record in get_passages(query, top_k=top_k or TOP_K * 2, paper_ids=[paper_id], rerank=rerank):
             try:
                 p = normalize_passage(record)
             except (ValueError, AttributeError, TypeError):

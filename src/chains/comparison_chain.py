@@ -160,6 +160,18 @@ def _load_json_object(raw: str) -> Optional[Dict[str, Any]]:
     return data if isinstance(data, dict) else None
 
 
+_GAP_LABEL_RE = re.compile(
+    r"\(\s*AI[- ]generated suggestion[^)]*\)\s*[:.\-–]?\s*"                       # "(AI-generated ...)"
+    r"|^\s*AI[- ]generated suggestion(?:,\s*not established fact)?\s*[:.\-–]\s*",  # "AI-generated suggestion: "
+    re.IGNORECASE)
+
+
+def strip_gap_label(text: str) -> str:
+    """Remove a copy of the AI-suggestion label the model may write into the gap text itself
+    (the system prompt asks it to); the label is returned once, in the `label` field."""
+    return _GAP_LABEL_RE.sub("", text or "").strip()
+
+
 def _is_not_reported(text: str) -> bool:
     return re.sub(r"[^a-z ]", "", text.lower()).strip().startswith("not reported")
 
@@ -307,7 +319,7 @@ def compare_from_passages(
     differences = _statements(data.get("differences"), labelled, with_evidence, "differences", warnings)
     trade_offs = _statements(data.get("trade_offs"), labelled, with_evidence, "trade_offs", warnings,
                              require_citation=True)
-    gaps = [{**g, "label": GAP_LABEL}
+    gaps = [{**g, "text": strip_gap_label(g["text"]), "label": GAP_LABEL}
             for g in _statements(data.get("research_gaps"), labelled, with_evidence, "research_gaps", warnings)]
 
     all_citations: Dict[str, Dict[str, Any]] = {}

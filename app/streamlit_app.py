@@ -198,6 +198,17 @@ if "active_chat" not in st.session_state:
 active_id = st.session_state.active_chat
 
 
+@st.cache_data(ttl=30, show_spinner=False)
+def fetch_papers():
+    """Indexed papers (team catalogue + uploads) from the backend; None if unreachable."""
+    try:
+        response = requests.get(f"{API_URL}/papers", timeout=10)
+        response.raise_for_status()
+        return [p for p in response.json().get("papers", []) if p.get("status") == "indexed"]
+    except (requests.RequestException, ValueError):
+        return None
+
+
 # ---------------- SIDEBAR ----------------
 with st.sidebar:
     st.markdown(
@@ -232,8 +243,48 @@ with st.sidebar:
 
     st.divider()
 
+    # ---- Paper library: limit answers to chosen papers, manage uploads ----
+    st.caption("PAPER LIBRARY")
+    library = fetch_papers()
+    if library is None:
+        st.caption("⚠️ Backend not reachable.")
+    else:
+        labels = {p["paper_id"]: (p.get("title") or p["paper_id"])[:70] for p in library}
+        # Drop selections that no longer exist (e.g. a deleted upload).
+        st.session_state["paper_filter"] = [
+            pid for pid in st.session_state.get("paper_filter", []) if pid in labels
+        ]
+        st.multiselect(
+            "Limit answers to",
+            options=list(labels),
+            format_func=lambda pid: labels[pid],
+            placeholder=f"All {len(labels)} papers",
+            key="paper_filter",
+        )
+        uploads = [p for p in library if p.get("source") == "upload"]
+        if uploads:
+            with st.expander(f"Your uploads ({len(uploads)})"):
+                for p in uploads:
+                    col_name, col_delete = st.columns([5, 1])
+                    col_name.caption(labels[p["paper_id"]])
+                    if col_delete.button("🗑", key=f"delete_{p['paper_id']}", help="Remove from library"):
+                        try:
+                            requests.delete(f"{API_URL}/papers/{p['paper_id']}", timeout=60).raise_for_status()
+                        except requests.RequestException:
+                            st.toast("Could not delete that upload.")
+                        fetch_papers.clear()
+                        st.rerun()
+
+    st.toggle(
+        "Verify claims (slower)",
+        key="verify_claims",
+        help="Checks every claim in the answer against its cited passage.",
+    )
+
+    st.divider()
+
     st.caption("RESEARCH TOPIC")
-    st.write("Agentic AI & Multi-Agent Systems")
+    st.write("Multimodal Large Language Models")
     st.caption("ResearchIQ • Hackathon Prototype")
 
 
@@ -259,6 +310,63 @@ if not chat["messages"]:
 
 
 # ---------------- DISPLAY CHAT HISTORY ----------------
+ROUTE_LABELS = {
+    "comparison": "📊 Paper comparison",
+    "synthesis": "📚 Literature synthesis",
+    "visual": "🖼️ Figure analysis",
+}
+VERDICT_ICONS = {
+    "supported": "✅", "partially_supported": "🟡", "unsupported": "❌",
+    "contradicted": "⛔", "interpretation": "💭", "not_a_claim": "▫️", "unverified": "❔",
+}
+
+
+def render_extras(message):
+    """Route badge, warnings, labelled sources with evidence, and the evidence check."""
+    if message.get("route") in ROUTE_LABELS:
+        st.caption(ROUTE_LABELS[message["route"]])
+
+    for warning in (message.get("warnings") or [])[:4]:
+        st.caption("⚠️ " + warning)
+
+    sources = message.get("sources") or []
+    if sources:
+        with st.expander(f"Sources ({len(sources)})"):
+            for source in sources:
+                label = source.get("source_label")
+                where = [f"p.{source['page']}" if source.get("page") else "page unknown"]
+                if source.get("section"):
+                    where.append(source["section"])
+                if source.get("fig_ref"):
+                    where.append(source["fig_ref"])
+                st.markdown(
+                    (f"**[{label}]** " if label else "")
+                    + f"{source.get('paper', 'Unknown')} — " + " · ".join(where)
+                )
+                text = (source.get("text") or "").strip()
+                if text:
+                    st.caption(text[:700] + ("…" if len(text) > 700 else ""))
+
+    verification = message.get("verification")
+    if verification and verification.get("claims"):
+        summary = ", ".join(
+            f"{count} {verdict.replace('_', ' ')}"
+            for verdict, count in verification.get("summary", {}).items()
+        )
+        title = {
+            "verified": "✅ Evidence check: all claims supported",
+            "issues_found": "🟡 Evidence check: some claims need attention",
+        }.get(verification.get("status"), "Evidence check")
+        with st.expander(f"{title} ({summary})"):
+            for claim in verification["claims"]:
+                icon = VERDICT_ICONS.get(claim["verdict"], "•")
+                st.markdown(f"{icon} **{claim['verdict'].replace('_', ' ')}** — {claim['text']}")
+                if claim.get("issues"):
+                    st.caption("; ".join(claim["issues"]))
+    elif verification and verification.get("status") == "error":
+        st.caption(f"⚠️ Evidence check failed: {verification.get('error')}")
+
+
 for message in chat["messages"]:
     with st.chat_message(message["role"]):
         if message.get("content"):
@@ -274,18 +382,17 @@ for message in chat["messages"]:
             else:
                 st.caption("📄 " + attachment["name"])
 
-        for source in message.get("sources", []):
-            st.caption(
-                f"📄 {source.get('paper', 'Unknown')} "
-                f"— Page {source.get('page', '?')}"
-            )
+        if message["role"] == "assistant":
+            render_extras(message)
 
 
 # ---------------- CHAT COMPOSER ----------------
+DOC_EXTENSIONS = (".pdf", ".txt", ".md")
+
 submission = st.chat_input(
     "Ask ResearchIQ anything or attach papers...",
     accept_file="multiple",
-    file_type=["pdf", "png", "jpg", "jpeg"],
+    file_type=["pdf", "txt", "md", "png", "jpg", "jpeg"],
     key=f"composer_{active_id}"
 )
 
@@ -298,17 +405,24 @@ if submission:
 
         # Store files for display in chat
         for file in files:
-            is_pdf = file.name.lower().endswith(".pdf")
+            is_doc = file.name.lower().endswith(DOC_EXTENSIONS)
 
             attachment = {
                 "name": file.name,
-                "type": "pdf" if is_pdf else "image"
+                "type": "pdf" if is_doc else "image"
             }
 
-            if not is_pdf:
+            if not is_doc:
                 attachment["data"] = file.getvalue()
 
             attachments.append(attachment)
+
+        # Recent turns let the backend resolve follow-ups ("what about its limitations?")
+        history = [
+            {"role": m["role"], "content": (m.get("content") or "")[:1500]}
+            for m in chat["messages"][-4:]
+            if m.get("content")
+        ]
 
         chat["messages"].append({
             "role": "user",
@@ -324,17 +438,17 @@ if submission:
             )
 
         response_parts = []
-        sources = []
+        result = {}
         uploaded_pdf_ids = []
         failed_pdfs = []
         image_ids = []
-        with st.spinner("Working on your request..."):
 
-            # Send PDF attachments to FastAPI
-            for file in files:
-                if not file.name.lower().endswith(".pdf"):
-                    continue
+        # Send document attachments to FastAPI (indexing happens during upload)
+        for file in files:
+            if not file.name.lower().endswith(DOC_EXTENSIONS):
+                continue
 
+            with st.spinner(f"Reading and indexing {file.name}… large papers can take a minute."):
                 try:
                     upload_response = requests.post(
                         f"{API_URL}/upload",
@@ -342,15 +456,17 @@ if submission:
                             "file": (
                                 file.name,
                                 file.getvalue(),
-                                "application/pdf"
+                                "application/pdf" if file.name.lower().endswith(".pdf")
+                                else "text/plain"
                             )
                         },
-                        timeout=600  # upload now includes indexing (parsing + embeddings)
+                        timeout=900  # upload includes parsing, OCR, figure descriptions, embeddings
                     )
 
                     upload_response.raise_for_status()
                     upload_result = upload_response.json()
                     uploaded_pdf_ids.append(upload_result["paper_id"])
+                    fetch_papers.clear()  # refresh the sidebar library
                     title = upload_result.get("title") or file.name
                     if upload_result.get("duplicate"):
                         response_parts.append(
@@ -381,76 +497,74 @@ if submission:
                         f"❌ Failed to upload **{file.name}**."
                     )
 
-            
-            # Send image attachments to FastAPI
-            for file in files:
-                if file.name.lower().endswith(".pdf"):
-                    continue
+        # Send image attachments to FastAPI
+        for file in files:
+            if file.name.lower().endswith(DOC_EXTENSIONS):
+                continue
 
-                with st.spinner(f"Uploading {file.name}..."):
-                    try:
-                        extension = file.name.lower().split(".")[-1]
-                        mime_type = (
-                            "image/png" if extension == "png"
-                            else "image/jpeg"
-                        )
+            with st.spinner(f"Uploading {file.name}..."):
+                try:
+                    extension = file.name.lower().split(".")[-1]
+                    mime_type = (
+                        "image/png" if extension == "png"
+                        else "image/jpeg"
+                    )
 
-                        response = requests.post(
-                            f"{API_URL}/upload-image",
-                            files={
-                                "file": (
-                                    file.name,
-                                    file.getvalue(),
-                                    mime_type
-                                )
-                            },
-                            timeout=60
-                        )
+                    response = requests.post(
+                        f"{API_URL}/upload-image",
+                        files={
+                            "file": (
+                                file.name,
+                                file.getvalue(),
+                                mime_type
+                            )
+                        },
+                        timeout=60
+                    )
 
-                        response.raise_for_status()
-                        result = response.json()
-                        image_ids.append(result["image_id"])
+                    response.raise_for_status()
+                    image_ids.append(response.json()["image_id"])
+                    if not question:
                         response_parts.append(
-                            f"✅ Image **{file.name}** uploaded successfully. "
-                            f"ID: `{result['image_id']}`"
+                            f"✅ Image **{file.name}** received. Ask a question about it."
                         )
 
-                    except requests.RequestException:
-                        response_parts.append(
-                            f"❌ Failed to upload image **{file.name}**."
-                        )
+                except requests.RequestException:
+                    response_parts.append(
+                        f"❌ Failed to upload image **{file.name}**."
+                    )
 
+        # A question about attached PDFs must not fall back to the whole library
+        # when those PDFs could not be read: the answer would be about other papers.
+        if question and failed_pdfs and not uploaded_pdf_ids and not image_ids:
+            response_parts.append(
+                "I didn't answer your question because the attached file could not be "
+                "read, and answering from the rest of the library would not be about "
+                "your file. Try a PDF with selectable text, or ask without an attachment "
+                "to search the whole library."
+            )
+            question = ""
+        elif question and failed_pdfs:
+            response_parts.append(
+                f"Answering from your other attachment(s) only; "
+                f"{', '.join(failed_pdfs)} could not be read."
+            )
 
-            # A question about attached PDFs must not fall back to the whole library
-            # when those PDFs could not be read: the answer would be about other papers.
-            if question and failed_pdfs and not uploaded_pdf_ids:
-                response_parts.append(
-                    "I didn't answer your question because the attached PDF could not be "
-                    "read, and answering from the rest of the library would not be about "
-                    "your file. Try a PDF with selectable text, or ask without an attachment "
-                    "to search the whole library."
-                )
-                question = ""
-            elif question and failed_pdfs:
-                response_parts.append(
-                    f"Answering from your other attachment(s) only; "
-                    f"{', '.join(failed_pdfs)} could not be read."
-                )
-
-            # Send question to FastAPI
-            if question:
+        # Send question to FastAPI (it picks QA, comparison, synthesis or figure analysis)
+        if question:
+            with st.spinner("Searching the papers and writing an answer…"):
                 try:
                     response = requests.post(
                         f"{API_URL}/ask",
-                        
-                    json={
-                        "question": question,
-                        "selected_papers": [],
-                        "uploaded_pdf_ids": uploaded_pdf_ids,
-                        "image_ids": image_ids
-                    },
-
-                        timeout=180  # retrieval + reranking + Gemini
+                        json={
+                            "question": question,
+                            "selected_papers": st.session_state.get("paper_filter", []),
+                            "uploaded_pdf_ids": uploaded_pdf_ids,
+                            "image_ids": image_ids,
+                            "history": history,
+                            "verify": st.session_state.get("verify_claims", False),
+                        },
+                        timeout=900  # synthesis across many papers can take a few minutes
                     )
 
                     response.raise_for_status()
@@ -463,7 +577,12 @@ if submission:
                         )
                     )
 
-                    sources = result.get("sources", [])
+                except requests.HTTPError as e:
+                    try:
+                        detail = e.response.json().get("detail", "")
+                    except ValueError:
+                        detail = ""
+                    response_parts.append(f"⚠️ The backend returned an error. {detail}".strip())
 
                 except requests.RequestException:
                     response_parts.append(
@@ -479,7 +598,10 @@ if submission:
         chat["messages"].append({
             "role": "assistant",
             "content": "\n\n".join(response_parts),
-            "sources": sources
+            "sources": result.get("sources", []),
+            "route": result.get("route"),
+            "warnings": result.get("warnings", []),
+            "verification": result.get("verification"),
         })
 
         st.rerun()
