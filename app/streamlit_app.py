@@ -1,51 +1,178 @@
-"""
-ResearchIQ – Streamlit UI
-Run with: streamlit run app/streamlit_app.py
-"""
+
 import streamlit as st
+import requests
 
-st.set_page_config(page_title="ResearchIQ", page_icon="🔬", layout="wide")
-st.title("🔬 ResearchIQ – Multimodal AI Research Assistant")
-st.caption("Hackathon prototype – work in progress")
-
-# --- Sidebar: paper upload ---
-with st.sidebar:
-    st.header("📄 Papers")
-    uploaded = st.file_uploader("Upload PDF papers", type=["pdf"], accept_multiple_files=True)
-    if uploaded:
-        st.success(f"{len(uploaded)} file(s) ready to ingest")
-        if st.button("Ingest papers"):
-            st.info("Ingestion pipeline not yet implemented.")
-
-# --- Tabs ---
-tab_qa, tab_compare, tab_synthesis, tab_visual = st.tabs(
-    ["💬 Q&A", "🔁 Compare", "📚 Synthesis", "🖼️ Visual Q&A"]
+st.set_page_config(
+    page_title="ResearchIQ",
+    page_icon="🔬",
+    layout="wide"
 )
 
-with tab_qa:
-    st.subheader("Ask a question across the paper collection")
-    question = st.text_input("Your question")
-    if st.button("Ask") and question:
-        st.info("QA chain not yet implemented.")
+# ---------- SIDEBAR ----------
+with st.sidebar:
+    st.title("🔬 ResearchIQ")
+    st.caption("Multimodal AI Research Assistant")
 
-with tab_compare:
-    st.subheader("Compare two papers")
-    col1, col2 = st.columns(2)
-    with col1:
-        paper_a = st.selectbox("Paper A", options=["(none)"])
-    with col2:
-        paper_b = st.selectbox("Paper B", options=["(none)"])
-    aspect = st.selectbox("Aspect", ["methodology", "results", "architecture", "datasets", "limitations"])
-    if st.button("Compare"):
-        st.info("Comparison chain not yet implemented.")
+    st.divider()
 
-with tab_synthesis:
-    st.subheader("Literature synthesis across all papers")
-    if st.button("Generate synthesis"):
-        st.info("Synthesis chain not yet implemented.")
+    st.subheader("Upload Research Papers")
 
-with tab_visual:
-    st.subheader("Ask about a figure, chart, or table")
-    fig_question = st.text_input("Question about a visual element")
-    if st.button("Ask about figure") and fig_question:
-        st.info("Visual chain not yet implemented.")
+    uploaded_files = st.file_uploader(
+        "Upload your research PDFs",
+        type=["pdf"],
+        accept_multiple_files=True
+    )
+
+    if uploaded_files:
+        st.success(f"{len(uploaded_files)} papers selected")
+
+        for file in uploaded_files:
+            st.write("📄", file.name)
+    else:
+        st.info("Upload PDFs to get started.")
+
+    st.divider()
+    st.caption("Research Topic")
+    st.write("Agentic AI & Multi-Agent Systems")
+
+
+# ---------- MAIN PAGE ----------
+st.title("ResearchIQ")
+st.subheader("Your AI-Powered Research Companion")
+
+st.write(
+    "Analyze research papers, compare methodologies, "
+    "explore figures, and discover research insights."
+)
+
+st.divider()
+
+tab1, tab2, tab3 = st.tabs([
+    "💬 Research Chat",
+    "📊 Paper Comparison",
+    "🖼️ Visual Analysis"
+])
+
+# ---------- CHAT TAB ----------
+with tab1:
+    st.header("Ask Your Research Assistant")
+
+    # Store chat history
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display previous messages
+    for message in st.session_state.messages:
+        with st.chat_message(message["role"]):
+            st.markdown(message["content"])
+
+            for source in message.get("sources", []):
+                st.caption(
+                    f"📄 {source.get('paper', 'Unknown')} "
+                    f"— Page {source.get('page', '?')}"
+                )
+
+    # User enters a question
+    question = st.chat_input(
+        "Ask a question about your research papers..."
+    )
+
+    if question:
+        st.session_state.messages.append({
+            "role": "user",
+            "content": question
+        })
+
+        with st.chat_message("user"):
+            st.write(question)
+
+        # Send question to FastAPI
+        with st.chat_message("assistant"):
+            with st.spinner("Getting response..."):
+                try:
+                    response = requests.post(
+                        "http://127.0.0.1:8000/ask",
+                        json={
+                            "question": question,
+                            "selected_papers": []
+                        },
+                        timeout=60
+                    )
+
+                    response.raise_for_status()
+                    result = response.json()
+
+                    answer = result["answer"]
+                    sources = result.get("sources", [])
+
+                    st.markdown(answer)
+
+                    # Display citations
+                    for source in sources:
+                        st.caption(
+                            f"📄 {source.get('paper', 'Unknown')} "
+                            f"— Page {source.get('page', '?')}"
+                        )
+
+                    # Save response in chat history
+                    st.session_state.messages.append({
+                        "role": "assistant",
+                        "content": answer,
+                        "sources": sources
+                    })
+
+                except requests.RequestException:
+                    st.error(
+                        "Cannot connect to FastAPI backend."
+                    )
+
+                except (KeyError, ValueError, TypeError):
+                    st.error(
+                        "Invalid response from backend."
+                    )
+
+
+# ---------- COMPARISON TAB ----------
+with tab2:
+    st.header("Compare Research Papers")
+
+    if uploaded_files and len(uploaded_files) >= 2:
+        names = [file.name for file in uploaded_files]
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            paper1 = st.selectbox(
+                "Select Paper 1", names
+            )
+
+        with col2:
+            paper2 = st.selectbox(
+                "Select Paper 2", names,
+                index=1
+            )
+
+        if st.button("Compare Papers"):
+            if paper1 == paper2:
+                st.warning("Choose two different papers.")
+            else:
+                st.info(
+                    f"Selected: {paper1} and {paper2}. "
+                    "Comparison backend coming next."
+                )
+    else:
+        st.info("Upload at least two PDFs to compare.")
+
+
+# ---------- VISUAL TAB ----------
+with tab3:
+    st.header("Visual Research Analysis")
+
+    image = st.file_uploader(
+        "Upload a research diagram or chart",
+        type=["png", "jpg", "jpeg"]
+    )
+
+    if image:
+        st.image(image, caption="Selected research figure")
+        st.info("AI figure interpretation coming next.")
