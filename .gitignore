@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# Data (do not commit PDFs or generated indexes)
+data/papers/
+data/figures/
+data/chroma_index/
+
+# Evaluation outputs (commit the questions CSV, not raw LLM outputs)
+evaluation/results/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
