@@ -1,42 +1,74 @@
 
 import re
+from typing import List, Dict, Optional
+
 from rank_bm25 import BM25Okapi
 
 
-class BM25Search:
+class KeywordSearcher:
+    """
+    Performs keyword-based retrieval using BM25.
+    """
 
-    def __init__(self, chunks):
+    def __init__(self, chunks: List[Dict]):
         """
-        chunks: List of dictionaries containing:
-            id
-            document
-            metadata
+        Args:
+            chunks: List of dictionaries containing:
+                    id, text, and metadata such as paper_id and page.
         """
 
         self.chunks = chunks
 
-        # Tokenize every document
+        # Tokenize every chunk and build the BM25 index.
         self.tokenized_corpus = [
-            self._tokenize(chunk["document"])
+            self._tokenize(chunk["text"])
             for chunk in chunks
         ]
 
-        # Build BM25 index
-        self.bm25 = BM25Okapi(self.tokenized_corpus)
+        self.bm25 = (
+            BM25Okapi(self.tokenized_corpus)
+            if self.tokenized_corpus
+            else None
+        )
 
-    def _tokenize(self, text):
+    @staticmethod
+    def _tokenize(text: str) -> List[str]:
         """
-        Tokenize text while preserving technical terms
-        such as GPT-4, ViT-L/14 and CLIP.
+        Convert text into lowercase tokens.
+        Preserves technical terms containing hyphens,
+        underscores, or slashes.
         """
+
         return re.findall(
             r"[a-zA-Z0-9]+(?:[-_/][a-zA-Z0-9]+)*",
             text.lower()
         )
 
-    def search(self, query, top_k=10):
+    def search(
+        self,
+        query: str,
+        top_k: int = 6,
+        paper_ids: Optional[List[str]] = None
+    ) -> List[Dict]:
+        """
+        Retrieve the most relevant chunks using BM25.
 
-        if not self.chunks:
+        Args:
+            query: User's question.
+            top_k: Maximum number of results.
+            paper_ids: Optional list of paper IDs to restrict search.
+
+        Returns:
+            Ranked list of chunks with their BM25 scores.
+        """
+
+        if not query or not query.strip():
+            raise ValueError("Query cannot be empty.")
+
+        if top_k <= 0:
+            raise ValueError("top_k must be greater than zero.")
+
+        if self.bm25 is None:
             return []
 
         query_tokens = self._tokenize(query)
@@ -46,23 +78,29 @@ class BM25Search:
 
         scores = self.bm25.get_scores(query_tokens)
 
-        # Get indices of top-scoring documents
-        ranked_indices = sorted(
-            range(len(scores)),
-            key=lambda i: scores[i],
-            reverse=True
-        )[:top_k]
-
         results = []
 
-        for rank, idx in enumerate(ranked_indices, start=1):
+        for index, score in enumerate(scores):
 
-            results.append({
-                "id": self.chunks[idx]["id"],
-                "document": self.chunks[idx]["document"],
-                "metadata": self.chunks[idx]["metadata"],
-                "bm25_score": float(scores[idx]),
-                "rank": rank
-            })
+            chunk = self.chunks[index]
 
-        return results
+            # Apply paper filtering consistently.
+            if paper_ids is not None:
+                if chunk.get("paper_id") not in paper_ids:
+                    continue
+
+            # Ignore chunks with no keyword relevance.
+            if score <= 0:
+                continue
+
+            result = chunk.copy()
+            result["score"] = float(score)
+
+            results.append(result)
+
+        results.sort(
+            key=lambda item: item["score"],
+            reverse=True
+        )
+
+        return results[:top_k]
