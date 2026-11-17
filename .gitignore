@@ -14,7 +14,7 @@ build/
 # Data (do not commit PDFs or generated indexes)
 data/papers/
 data/figures/
-data/chroma_index/
+data/faiss_index/
 
 # Evaluation outputs (commit the questions CSV, not raw LLM outputs)
 evaluation/results/
