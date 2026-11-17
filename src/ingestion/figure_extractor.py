@@ -8,7 +8,7 @@ For each page:
   - Collect the nearby paragraph text (within 120pt above/below) as context.
 """
 
-import fitz
+import pymupdf as fitz
 import re
 from pathlib import Path
 from typing import List, Dict, Any
@@ -126,11 +126,21 @@ def extract_figures(
                     f.write(base_image["image"])
 
                 # Find the image bounding box on the page
-                img_rects = [
-                    fitz.Rect(item[1])
-                    for item in page.get_image_rects(xref)
-                ]
-                img_rect = img_rects[0] if img_rects else fitz.Rect(0, 0, width, height)
+                # get_image_rects returns Rect objects directly in newer PyMuPDF
+                try:
+                    raw_rects = page.get_image_rects(xref)
+                    img_rects = []
+                    for item in raw_rects:
+                        # item may be a Rect directly, or a tuple/list of 4 numbers
+                        if isinstance(item, fitz.Rect):
+                            img_rects.append(item)
+                        else:
+                            coords = item[1] if (isinstance(item, (list, tuple)) and len(item) > 1) else item
+                            if hasattr(coords, '__len__') and len(coords) == 4:
+                                img_rects.append(fitz.Rect(coords[0], coords[1], coords[2], coords[3]))
+                    img_rect = img_rects[0] if img_rects else fitz.Rect(0, 0, width, height)
+                except Exception:
+                    img_rect = fitz.Rect(0, 0, width, height)
 
                 caption = _find_caption(page, img_rect)
                 nearby = _nearby_text(page, img_rect)

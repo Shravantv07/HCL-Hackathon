@@ -3,7 +3,7 @@ PDF text extraction with page-level metadata.
 Uses PyMuPDF as primary parser; falls back to OCR for image-only pages.
 """
 
-import fitz  # PyMuPDF
+import pymupdf as fitz
 import pytesseract
 from PIL import Image
 from pathlib import Path

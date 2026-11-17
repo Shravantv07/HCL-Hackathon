@@ -27,6 +27,7 @@ COLLECTION_NAME = "research_papers"
 
 _collection = None
 _all_chunks: List[Dict[str, Any]] = None
+_chunk_positions: Dict[str, int] = None
 _bm25: BM25Okapi = None
 
 
@@ -41,7 +42,7 @@ def _get_embedding(text: str) -> List[float]:
 
 
 def _load_assets():
-    global _collection, _all_chunks, _bm25
+    global _collection, _all_chunks, _chunk_positions, _bm25
 
     if _collection is not None:
         return
@@ -64,15 +65,19 @@ def _load_assets():
         metadata={"hnsw:space": "cosine"},
     )
 
-    # Load all chunks for BM25
-    all_data = _collection.get(include=["documents", "metadatas"])
-    docs = all_data.get("documents") or []
+    # Load all chunks for BM25, retaining their Chroma IDs
+    all_data = _collection.get(include=["documents", "metadatas", "ids"])
+    ids   = all_data.get("ids") or []
+    docs  = all_data.get("documents") or []
     metas = all_data.get("metadatas") or []
 
     _all_chunks = [
-        {**meta, "text": doc}
-        for doc, meta in zip(docs, metas)
+        {"id": cid, **meta, "text": doc}
+        for cid, doc, meta in zip(ids, docs, metas)
     ]
+
+    # ID-to-position mapping for reliable lookup (avoids duplicate-text bugs)
+    _chunk_positions = {chunk["id"]: idx for idx, chunk in enumerate(_all_chunks)}
 
     corpus_tokens = [c["text"].lower().split() for c in _all_chunks]
     _bm25 = BM25Okapi(corpus_tokens) if corpus_tokens else None
@@ -132,17 +137,12 @@ def retrieve(
     chroma_metas = chroma_results["metadatas"][0]
     chroma_docs  = chroma_results["documents"][0]
 
-    # Map Chroma result back to index positions in _all_chunks
-    all_texts = [c["text"] for c in _all_chunks]
+    # Map Chroma result back to index positions using unique chunk ID
     dense_indices = []
-    dense_chunks  = {}
-    for cid, meta, doc in zip(chroma_ids, chroma_metas, chroma_docs):
-        try:
-            pos = all_texts.index(doc)
+    for cid in chroma_ids:
+        pos = _chunk_positions.get(cid)
+        if pos is not None:
             dense_indices.append(pos)
-            dense_chunks[pos] = {**meta, "text": doc}
-        except ValueError:
-            pass
 
     # --- Sparse retrieval (BM25) ---
     sparse_indices = []
