@@ -3,9 +3,10 @@ Input validation and prompt-injection defence.
 """
 from pathlib import Path
 
+from src.config import get_settings, settings
 
 ALLOWED_EXTENSIONS = {".pdf"}
-MAX_FILE_SIZE_MB = 50
+MAX_FILE_SIZE_MB = settings.max_file_size_mb
 
 
 def validate_upload(file_path: str) -> None:
@@ -13,9 +14,10 @@ def validate_upload(file_path: str) -> None:
     path = Path(file_path)
     if path.suffix.lower() not in ALLOWED_EXTENSIONS:
         raise ValueError(f"Unsupported file type: {path.suffix}. Only PDF files are accepted.")
+    max_mb = get_settings().max_file_size_mb
     size_mb = path.stat().st_size / (1024 * 1024)
-    if size_mb > MAX_FILE_SIZE_MB:
-        raise ValueError(f"File too large: {size_mb:.1f} MB. Maximum is {MAX_FILE_SIZE_MB} MB.")
+    if size_mb > max_mb:
+        raise ValueError(f"File too large: {size_mb:.1f} MB. Maximum is {max_mb} MB.")
 
 
 def wrap_source_content(text: str) -> str:

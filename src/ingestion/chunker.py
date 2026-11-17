@@ -85,6 +85,11 @@ def chunk_pages(
             token_count: int,
         }
     """
+    if chunk_size <= 0:
+        raise ValueError("chunk_size must be greater than zero.")
+    if overlap < 0 or overlap >= chunk_size:
+        raise ValueError("overlap must be >= 0 and less than chunk_size.")
+
     chunks: List[Dict[str, Any]] = []
     chunk_index = 0
 

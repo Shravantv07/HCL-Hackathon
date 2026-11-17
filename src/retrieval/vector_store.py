@@ -1,9 +1,9 @@
 
-import os
 from typing import Dict, List, Optional
 
 import chromadb
 
+from src.config import get_settings
 from src.retrieval.embeddings import EmbeddingGenerator
 
 
@@ -25,17 +25,13 @@ class VectorStore:
         if collection is not None:
             self.collection = collection
         else:
-            chroma_path = os.getenv(
-                "CHROMA_PATH",
-                "./data/chroma_index"
-            )
-
-            client = chromadb.PersistentClient(path=chroma_path)
+            cfg = get_settings()
+            client = chromadb.PersistentClient(path=str(cfg.chroma_path))
 
             # Connect to the existing collection.
             # Do not silently create an empty collection.
             self.collection = client.get_collection(
-                name="research_papers"
+                name=cfg.chroma_collection
             )
 
     @staticmethod
@@ -78,21 +74,31 @@ class VectorStore:
     def semantic_search(
         self,
         query: str,
-        top_k: int = 6,
+        top_k: Optional[int] = None,
         paper_ids: Optional[List[str]] = None
     ) -> List[Dict]:
 
         if not query or not query.strip():
             raise ValueError("Query cannot be empty.")
 
+        if top_k is None:
+            top_k = get_settings().top_k
+
         if top_k <= 0:
             raise ValueError("top_k must be greater than zero.")
 
         query_embedding = self.embedding_generator.embed_query(query)
 
+        n_results = top_k
+        if hasattr(self.collection, "count"):
+            total = self.collection.count()
+            if total == 0:
+                return []
+            n_results = min(top_k, total)
+
         search_args = {
             "query_embeddings": [query_embedding],
-            "n_results": top_k,
+            "n_results": n_results,
             "include": ["documents", "metadatas", "distances"]
         }
 

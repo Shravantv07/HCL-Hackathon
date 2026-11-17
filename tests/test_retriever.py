@@ -119,6 +119,61 @@ def test_empty_query():
         pass
 
 
+def test_invalid_top_k():
+    retriever = Retriever(
+        vector_store=FakeVectorStore(),
+        keyword_searcher=FakeKeywordSearcher([])
+    )
+    try:
+        retriever.retrieve("multimodal", top_k=0)
+        assert False, "Expected ValueError"
+    except ValueError:
+        pass
+
+
+def test_paper_ids_passed_through():
+    seen = {}
+
+    class RecordingVectorStore(FakeVectorStore):
+        def semantic_search(self, query, top_k, paper_ids=None):
+            seen["dense_paper_ids"] = paper_ids
+            return super().semantic_search(query, top_k, paper_ids=paper_ids)
+
+    class RecordingKeywordSearcher(FakeKeywordSearcher):
+        def search(self, query, top_k, paper_ids=None):
+            seen["sparse_paper_ids"] = paper_ids
+            return super().search(query, top_k, paper_ids=paper_ids)
+
+    retriever = Retriever(
+        vector_store=RecordingVectorStore(),
+        keyword_searcher=RecordingKeywordSearcher([])
+    )
+    retriever.retrieve("multimodal", top_k=2, paper_ids=["p01"], rerank=False)
+    assert seen["dense_paper_ids"] == ["p01"]
+    assert seen["sparse_paper_ids"] == ["p01"]
+
+
+def test_empty_results_skips_reranker():
+    class EmptyVectorStore(FakeVectorStore):
+        def semantic_search(self, query, top_k, paper_ids=None):
+            return []
+
+    class EmptyKeywordSearcher(FakeKeywordSearcher):
+        def search(self, query, top_k, paper_ids=None):
+            return []
+
+    class FailingReranker:
+        def rerank(self, query, chunks, top_k):
+            raise AssertionError("Reranker should not be called when there are no results")
+
+    retriever = Retriever(
+        vector_store=EmptyVectorStore(),
+        keyword_searcher=EmptyKeywordSearcher([]),
+        reranker=FailingReranker(),
+    )
+    assert retriever.retrieve("no match", top_k=2, rerank=True) == []
+
+
 if __name__ == "__main__":
     test_retriever_without_reranking()
     test_retriever_with_reranking()

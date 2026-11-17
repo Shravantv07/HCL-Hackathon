@@ -3,24 +3,29 @@ PDF text extraction with page-level metadata.
 Uses PyMuPDF as primary parser; falls back to OCR for image-only pages.
 """
 
+import io
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
 import pymupdf as fitz
 import pytesseract
 from PIL import Image
-from pathlib import Path
-from typing import List, Dict, Any
-import io
+
+from src.config import get_settings
 
 
-def _page_to_image(page: fitz.Page, dpi: int = 200) -> Image.Image:
+def _page_to_image(page: fitz.Page, dpi: Optional[int] = None) -> Image.Image:
     """Render a PDF page to a PIL image for OCR."""
-    mat = fitz.Matrix(dpi / 72, dpi / 72)
+    effective_dpi = dpi if dpi is not None else get_settings().ocr_dpi
+    mat = fitz.Matrix(effective_dpi / 72, effective_dpi / 72)
     pix = page.get_pixmap(matrix=mat, colorspace=fitz.csRGB)
     return Image.open(io.BytesIO(pix.tobytes("png")))
 
 
-def _is_mostly_empty(text: str, min_chars: int = 50) -> bool:
+def _is_mostly_empty(text: str, min_chars: Optional[int] = None) -> bool:
     """Return True if the extracted text is too short to be useful."""
-    return len(text.strip()) < min_chars
+    threshold = min_chars if min_chars is not None else get_settings().ocr_min_chars
+    return len(text.strip()) < threshold
 
 
 def parse_pdf(pdf_path: str, paper_id: str) -> List[Dict[str, Any]]:

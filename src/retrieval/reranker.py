@@ -1,5 +1,7 @@
 
-from typing import List, Dict, Any
+from typing import Any, Dict, List, Optional
+
+from src.config import get_settings
 
 
 class Reranker:
@@ -10,13 +12,14 @@ class Reranker:
     def __init__(
         self,
         model=None,
-        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        model_name: Optional[str] = None
     ):
         # Model injection makes testing possible without downloading it.
         if model is None:
             from sentence_transformers import CrossEncoder
 
-            self.model = CrossEncoder(model_name)
+            resolved_model = model_name or get_settings().reranker_model
+            self.model = CrossEncoder(resolved_model)
         else:
             self.model = model
 
