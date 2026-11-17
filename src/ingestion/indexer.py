@@ -136,9 +136,12 @@ def _save_figures_index(index: Dict[str, Any]) -> None:
 # Single-paper ingestion
 # ---------------------------------------------------------------------------
 
-def index_paper(pdf_path: str, paper_id: str, paper_title: str) -> Dict[str, Any]:
+def index_paper(
+    pdf_path: str, paper_id: str, paper_title: str, pages: List[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """
     Full pipeline for one paper. Skips if already indexed.
+    `pages` (output of parse_pdf) may be passed in to avoid parsing/OCR-ing twice.
     Returns a summary dict with counts.
     """
     collection = _get_collection()
@@ -147,8 +150,9 @@ def index_paper(pdf_path: str, paper_id: str, paper_title: str) -> Dict[str, Any
         print(f"[indexer] {paper_id} already indexed — skipping.")
         return {"paper_id": paper_id, "status": "skipped"}
 
-    print(f"[indexer] Parsing {pdf_path} ...")
-    pages = parse_pdf(pdf_path, paper_id)
+    if pages is None:
+        print(f"[indexer] Parsing {pdf_path} ...")
+        pages = parse_pdf(pdf_path, paper_id)
     print(f"[indexer]   {len(pages)} pages extracted")
 
     text_chunks = chunk_pages(
@@ -162,6 +166,11 @@ def index_paper(pdf_path: str, paper_id: str, paper_title: str) -> Dict[str, Any
     print(f"[indexer] Extracting figures ...")
     figures = extract_figures(pdf_path, paper_id, FIGURES_PATH)
     print(f"[indexer]   {len(figures)} figures extracted")
+
+    # Gemini vision: add searchable AI-generated descriptions (cached; never fails indexing).
+    from src.ingestion.vision import describe_figures
+    vision_stats = describe_figures(figures, paper_title=paper_title)
+    print(f"[indexer]   figure descriptions: {vision_stats}")
 
     fig_chunks = chunk_figures(figures, paper_title=paper_title)
     print(f"[indexer]   {len(fig_chunks)} figure chunks")
@@ -184,6 +193,7 @@ def index_paper(pdf_path: str, paper_id: str, paper_title: str) -> Dict[str, Any
         "text_chunks": len(text_chunks),
         "figures":     len(figures),
         "fig_chunks":  len(fig_chunks),
+        "vision":      vision_stats,
     }
 
 

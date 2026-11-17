@@ -152,6 +152,10 @@ def chunk_figures(figures: List[Dict[str, Any]], paper_title: str = "") -> List[
 
     for i, fig in enumerate(figures):
         combined = f"{fig['caption']} {fig['nearby_text']}".strip()
+        if fig.get("description"):
+            # Added at ingestion by src/ingestion/vision.py; labelled so it is never
+            # mistaken for the authors' own words.
+            combined = f"{combined}\n[AI-generated figure description] {fig['description']}".strip()
         if not combined:
             combined = f"Figure on page {fig['page']} of {paper_title}"
 

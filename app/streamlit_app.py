@@ -326,6 +326,7 @@ if submission:
         response_parts = []
         sources = []
         uploaded_pdf_ids = []
+        failed_pdfs = []
         image_ids = []
         with st.spinner("Working on your request..."):
 
@@ -364,6 +365,7 @@ if submission:
                         )
 
                 except requests.HTTPError as e:
+                    failed_pdfs.append(file.name)
                     try:
                         detail = e.response.json().get("detail", "")
                     except ValueError:
@@ -374,6 +376,7 @@ if submission:
                     )
 
                 except requests.RequestException:
+                    failed_pdfs.append(file.name)
                     response_parts.append(
                         f"❌ Failed to upload **{file.name}**."
                     )
@@ -417,6 +420,22 @@ if submission:
                             f"❌ Failed to upload image **{file.name}**."
                         )
 
+
+            # A question about attached PDFs must not fall back to the whole library
+            # when those PDFs could not be read: the answer would be about other papers.
+            if question and failed_pdfs and not uploaded_pdf_ids:
+                response_parts.append(
+                    "I didn't answer your question because the attached PDF could not be "
+                    "read, and answering from the rest of the library would not be about "
+                    "your file. Try a PDF with selectable text, or ask without an attachment "
+                    "to search the whole library."
+                )
+                question = ""
+            elif question and failed_pdfs:
+                response_parts.append(
+                    f"Answering from your other attachment(s) only; "
+                    f"{', '.join(failed_pdfs)} could not be read."
+                )
 
             # Send question to FastAPI
             if question:

@@ -63,6 +63,42 @@ def _save_record(record: Dict[str, Any]) -> None:
     os.replace(tmp, REGISTRY_PATH)
 
 
+def remove_from_index(paper_id: str) -> int:
+    """
+    Delete everything indexing wrote for `paper_id`: its Chroma chunks, its entries in
+    figures_index.json and the extracted figure images. Returns the number of chunks
+    removed. Safe to call when nothing was written.
+    """
+    import chromadb  # local import: only needed for cleanup
+
+    cfg = get_settings()
+    removed = 0
+    try:
+        collection = chromadb.PersistentClient(path=str(cfg.chroma_path)).get_collection(cfg.chroma_collection)
+        ids = collection.get(where={"paper_id": paper_id})["ids"]
+        if ids:
+            collection.delete(ids=ids)
+        removed = len(ids)
+    except Exception:
+        pass  # no collection yet -> nothing to remove
+
+    try:
+        fig_index = json.loads(cfg.figures_index_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        fig_index = None
+    if isinstance(fig_index, dict):
+        stale = [k for k, v in fig_index.items() if isinstance(v, dict) and v.get("paper_id") == paper_id]
+        for key in stale:
+            image_path = fig_index.pop(key).get("image_path")
+            if image_path and Path(image_path).is_file():
+                Path(image_path).unlink()
+        if stale:
+            tmp = cfg.figures_index_path.with_suffix(".tmp")
+            tmp.write_text(json.dumps(fig_index, indent=2, ensure_ascii=False), encoding="utf-8")
+            os.replace(tmp, cfg.figures_index_path)
+    return removed
+
+
 def indexed_uploads() -> Dict[str, str]:
     """paper_id -> title for every successfully indexed upload."""
     return {pid: r.get("title") or pid for pid, r in load_registry().items()
@@ -154,15 +190,30 @@ def ingest_upload(content: bytes, filename: str) -> Dict[str, Any]:
                   "error": None, "uploaded_at": _now(), "indexed_at": None, "source": "upload"}
         _save_record(record)
 
+        def fail(message: str, cause: Optional[Exception] = None) -> UploadError:
+            remove_from_index(paper_id)  # never leave a failed paper half-indexed
+            record.update(status="failed", error=message)
+            _save_record(record)
+            err = UploadError(message)
+            err.__cause__ = cause
+            return err
+
+        # 1. Extract text (with OCR for image-only pages) BEFORE anything is indexed.
+        from src.ingestion.pdf_parser import parse_pdf, tesseract_available
+        try:
+            pages = parse_pdf(str(pdf_path), paper_id)
+        except Exception as e:
+            raise fail(f"Could not read this PDF: {e}", e)
+        if not sum(p["word_count"] for p in pages):
+            note = "" if tesseract_available() else " (Tesseract is not installed on the server)"
+            raise fail(f"No readable text was found in this PDF, even with OCR{note}.")
+
+        # 2. Index the already-parsed pages (text chunks + figures).
         try:
             from src.ingestion.indexer import index_paper  # heavy import, only when needed
-            summary = index_paper(str(pdf_path), paper_id, title)
-            if summary.get("status") == "indexed" and not summary.get("text_chunks"):
-                raise UploadError("No extractable text was found in this PDF (is it a scanned image?).")
+            summary = index_paper(str(pdf_path), paper_id, title, pages=pages)
         except Exception as e:
-            record.update(status="failed", error=str(e))
-            _save_record(record)
-            raise e if isinstance(e, UploadError) else UploadError(f"Indexing failed: {e}") from e
+            raise fail(f"Indexing failed: {e}", e)
 
         record.update(status="indexed", indexed_at=_now(), pages=summary.get("pages"),
                       text_chunks=summary.get("text_chunks"), figures=summary.get("figures"))
