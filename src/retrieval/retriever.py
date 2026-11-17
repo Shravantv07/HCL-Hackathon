@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 CHROMA_PATH     = os.getenv("CHROMA_PATH", "./data/chroma_index")
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "models/text-embedding-004")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-2")
 GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
 COLLECTION_NAME = "research_papers"
 
